@@ -1,5 +1,11 @@
 import React, { useState, useRef } from 'react';
 import { Note } from '../core/domain/note';
+import {
+  DEFAULT_FOLDER,
+  folderEmptyMessage,
+  notesInFolder,
+  uniqueFolders,
+} from '../core/notes/folderTree';
 import { 
   FileText, 
   Pin, 
@@ -54,9 +60,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const allTags = Array.from(new Set(notes.flatMap(n => n.tags))).sort();
 
-  const allFolders = Array.from(
-    new Set(notes.map(n => n.folder || 'General'))
-  ).sort();
+  const allFolders = uniqueFolders(notes);
 
   const filteredNotes = notes.filter(n => {
     const matchesSearch = 
@@ -65,6 +69,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     const matchesTag = selectedTag ? n.tags.includes(selectedTag) : true;
     return matchesSearch && matchesTag;
   });
+
+  const isFiltering = search.trim().length > 0 || selectedTag !== null;
 
   const pinnedNotes = filteredNotes.filter(n => n.isPinned);
 
@@ -166,11 +172,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {/* Folder Hierarchy Tree */}
         <div className="space-y-1">
           {allFolders.map(folderName => {
-            const folderNotes = filteredNotes.filter(
-              n => (n.folder || 'General') === folderName && !n.isPinned
+            const allInFolder = notesInFolder(notes, folderName);
+            const visibleInFolder = filteredNotes.filter(
+              n => (n.folder || DEFAULT_FOLDER) === folderName
             );
-            if (folderNotes.length === 0) return null;
+            const folderNotes = visibleInFolder.filter(n => !n.isPinned);
             const isCollapsed = collapsedFolders[folderName] || false;
+            const emptyMessage = folderEmptyMessage(
+              allInFolder.length,
+              visibleInFolder.length,
+              isFiltering
+            );
 
             return (
               <div key={folderName} className="space-y-0.5">
@@ -194,9 +206,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     )}
                     <span className="truncate">{folderName}</span>
                   </div>
-                  <span className="text-xs font-mono font-medium text-slate-500 bg-slate-800/80 px-1.5 py-0.2 rounded border border-slate-700/40">
-                    {folderNotes.length}
-                  </span>
+                  <div className="flex items-center space-x-1 shrink-0">
+                    <span className="text-xs font-mono font-medium text-slate-500 bg-slate-800/80 px-1.5 py-0.2 rounded border border-slate-700/40">
+                      {folderNotes.length}
+                    </span>
+                    <button
+                      onClick={e => {
+                        e.stopPropagation();
+                        setCollapsedFolders(prev => ({ ...prev, [folderName]: false }));
+                        onNewNote(folderName);
+                      }}
+                      title={`New note in ${folderName}`}
+                      className="p-1 rounded-md text-slate-500 hover:text-indigo-400 hover:bg-slate-700/60 transition-colors"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
 
                 {/* Nested Tree Branch with vertical guide line (GitHub/VS Code tree indicator) */}
@@ -217,6 +242,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         />
                       );
                     })}
+                    {emptyMessage && (
+                      <div className="px-2 py-1 text-xs italic text-slate-500">
+                        {emptyMessage}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
