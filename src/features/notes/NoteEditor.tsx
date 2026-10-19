@@ -4,6 +4,7 @@ import { MarkdownPreview } from './MarkdownPreview';
 import { BacklinksPanel } from './BacklinksPanel';
 import { BUILT_IN_TEMPLATES } from '../../core/templates/builtInTemplates';
 import { stripAllEmojis } from '../../core/storage/localStorageAdapter';
+import { toLocalDateKey } from '../../core/date/localDate';
 import { 
   Columns, 
   Eye, 
@@ -87,7 +88,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     const tpl = BUILT_IN_TEMPLATES.find(t => t.id === templateId);
     if (!tpl) return;
 
-    const dateStr = new Date().toISOString().slice(0, 10);
+    const dateStr = toLocalDateKey();
     const generated = stripAllEmojis(tpl.templateContent({
       title: note.title,
       dateStr,

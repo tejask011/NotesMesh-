@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { BUILT_IN_TEMPLATES } from '../../core/templates/builtInTemplates';
 import { NoteTemplate } from '../../core/domain/template';
+import { toLocalDateKey } from '../../core/date/localDate';
 import { 
   FileSpreadsheet, 
   Folder, 
@@ -22,7 +23,7 @@ export const TemplatesView: React.FC<TemplatesViewProps> = ({
   const [noteTitle, setNoteTitle] = useState('');
   const [copied, setCopied] = useState(false);
 
-  const dateStr = new Date().toISOString().slice(0, 10);
+  const dateStr = toLocalDateKey();
   const previewContent = selectedTemplate.templateContent({
     title: noteTitle || selectedTemplate.name,
     dateStr,

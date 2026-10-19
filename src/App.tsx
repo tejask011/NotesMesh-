@@ -4,6 +4,7 @@ import { CanvasDocument } from './core/domain/canvas';
 import { NoteTemplate } from './core/domain/template';
 import { storage } from './core/storage/localStorageAdapter';
 import { buildBacklinks, extractTags } from './core/markdown/wikilinks';
+import { toLocalDateKey } from './core/date/localDate';
 import { pluginManager, StatusBarItem } from './core/plugins/pluginManager';
 import { WordCountPlugin, MarkdownExportPlugin, TableOfContentsPlugin } from './core/plugins/samplePlugins';
 
@@ -113,7 +114,7 @@ export const App: React.FC = () => {
   };
 
   const handleCreateNoteFromTemplate = (template: NoteTemplate, customTitle?: string) => {
-    const dateStr = new Date().toISOString().slice(0, 10);
+    const dateStr = toLocalDateKey();
     const title = customTitle || `${template.name} - ${dateStr}`;
     const content = template.templateContent({ title, dateStr });
 
@@ -135,7 +136,7 @@ export const App: React.FC = () => {
   };
 
   const handleOpenDailyNote = () => {
-    const dateStr = new Date().toISOString().slice(0, 10);
+    const dateStr = toLocalDateKey();
     const dailyTitle = `Daily Note - ${dateStr}`;
     const existing = notes.find(n => n.title === dailyTitle);
 

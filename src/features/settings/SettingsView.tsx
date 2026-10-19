@@ -2,6 +2,7 @@ import React, { useRef } from 'react';
 import { storage } from '../../core/storage/localStorageAdapter';
 import { Note } from '../../core/domain/note';
 import { CanvasDocument } from '../../core/domain/canvas';
+import { toLocalDateKey } from '../../core/date/localDate';
 import { 
   Settings, 
   Moon, 
@@ -47,7 +48,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `notemesh-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `notemesh-backup-${toLocalDateKey()}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
