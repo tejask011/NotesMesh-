@@ -351,6 +351,7 @@ export const App: React.FC = () => {
       {/* Command Palette */}
       <CommandPalette
         isOpen={isCommandPaletteOpen}
+        onOpen={() => setIsCommandPaletteOpen(true)}
         onClose={() => setIsCommandPaletteOpen(false)}
         notes={notes}
         onOpenNote={handleNavigateToNote}
