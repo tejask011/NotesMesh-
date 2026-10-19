@@ -1,7 +1,8 @@
 import React, { useState, useRef } from 'react';
 import { Note } from '../../core/domain/note';
-import { CanvasDocument, CanvasElement, CanvasElementType, ConnectorStyle, ArrowHeadType } from '../../core/domain/canvas';
+import { CanvasDocument, CanvasElement, CanvasElementType, ConnectorStyle, ConnectorLineStyle, ArrowHeadType } from '../../core/domain/canvas';
 import { CanvasToolbar } from './CanvasToolbar';
+import { getConnectorAppearance, buildConnectorPath } from '../../core/canvas/connectorAppearance';
 import { 
   FileText, 
   Trash2, 
@@ -13,7 +14,9 @@ import {
   Workflow,
   Spline,
   GitCommit,
-  ArrowRight
+  ArrowRight,
+  MoreHorizontal,
+  Minus
 } from 'lucide-react';
 
 interface CanvasWorkspaceProps {
@@ -72,6 +75,7 @@ export const CanvasWorkspace: React.FC<CanvasWorkspaceProps> = ({
 }) => {
   const [activeTool, setActiveTool] = useState<CanvasElementType | 'select'>('select');
   const [connectorStyle, setConnectorStyle] = useState<ConnectorStyle>('curved');
+  const [connectorLineStyle, setConnectorLineStyle] = useState<ConnectorLineStyle>('solid');
   const [arrowHeadType, setArrowHeadType] = useState<ArrowHeadType>('end');
   
   // Auto-connect flow state
@@ -288,6 +292,7 @@ export const CanvasWorkspace: React.FC<CanvasWorkspaceProps> = ({
           fromPoint: { x, y },
           toPoint: { x: x + 120, y: y + 60 },
           connectorStyle,
+          connectorLineStyle,
           arrowHeadType,
         };
         break;
@@ -325,6 +330,7 @@ export const CanvasWorkspace: React.FC<CanvasWorkspaceProps> = ({
             fromPoint,
             toPoint,
             connectorStyle,
+            connectorLineStyle,
             arrowHeadType,
             color: '#6366f1',
           };
@@ -442,6 +448,11 @@ export const CanvasWorkspace: React.FC<CanvasWorkspaceProps> = ({
     pushHistory(next);
   };
 
+  const handleChangeConnectorLineStyle = (id: string, style: ConnectorLineStyle) => {
+    const next = canvasDoc.elements.map(el => (el.id === id ? { ...el, connectorLineStyle: style } : el));
+    pushHistory(next);
+  };
+
   const handleChangeArrowHeadType = (id: string, head: ArrowHeadType) => {
     const next = canvasDoc.elements.map(el => (el.id === id ? { ...el, arrowHeadType: head } : el));
     pushHistory(next);
@@ -463,6 +474,9 @@ export const CanvasWorkspace: React.FC<CanvasWorkspaceProps> = ({
   };
 
   const selectedElement = canvasDoc.elements.find(el => el.id === selectedElementId);
+  const selectedConnectorAppearance = selectedElement
+    ? getConnectorAppearance(selectedElement)
+    : null;
 
   return (
     <div
@@ -478,6 +492,8 @@ export const CanvasWorkspace: React.FC<CanvasWorkspaceProps> = ({
         setActiveTool={setActiveTool}
         connectorStyle={connectorStyle}
         setConnectorStyle={setConnectorStyle}
+        connectorLineStyle={connectorLineStyle}
+        setConnectorLineStyle={setConnectorLineStyle}
         arrowHeadType={arrowHeadType}
         setArrowHeadType={setArrowHeadType}
         isAutoConnecting={isAutoConnecting}
@@ -517,23 +533,33 @@ export const CanvasWorkspace: React.FC<CanvasWorkspaceProps> = ({
               <button
                 onClick={() => handleChangeConnectorStyle(selectedElement.id, 'curved')}
                 title="Curved Flow"
-                className={`p-1 rounded ${selectedElement.connectorStyle === 'curved' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                className={`p-1 rounded ${selectedConnectorAppearance?.geometry === 'curved' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
               >
                 <Spline className="w-3.5 h-3.5" />
               </button>
               <button
                 onClick={() => handleChangeConnectorStyle(selectedElement.id, 'orthogonal')}
                 title="90° Step Orthogonal"
-                className={`p-1 rounded ${selectedElement.connectorStyle === 'orthogonal' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                className={`p-1 rounded ${selectedConnectorAppearance?.geometry === 'orthogonal' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
               >
                 <GitCommit className="w-3.5 h-3.5" />
               </button>
               <button
                 onClick={() => handleChangeConnectorStyle(selectedElement.id, 'straight')}
                 title="Straight Arrow"
-                className={`p-1 rounded ${selectedElement.connectorStyle === 'straight' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                className={`p-1 rounded ${selectedConnectorAppearance?.geometry === 'straight' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
               >
                 <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => handleChangeConnectorLineStyle(
+                  selectedElement.id,
+                  selectedConnectorAppearance?.dashed ? 'solid' : 'dashed'
+                )}
+                title={selectedConnectorAppearance?.dashed ? 'Dashed Line Active' : 'Switch to Dashed Line'}
+                className={`p-1 rounded ${selectedConnectorAppearance?.dashed ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
+              >
+                <MoreHorizontal className="w-3.5 h-3.5" />
               </button>
               <button
                 onClick={() => handleChangeArrowHeadType(
@@ -546,6 +572,16 @@ export const CanvasWorkspace: React.FC<CanvasWorkspaceProps> = ({
                 }`}
               >
                 &lt;-&gt;
+              </button>
+              <button
+                onClick={() => handleChangeArrowHeadType(
+                  selectedElement.id,
+                  selectedElement.arrowHeadType === 'none' ? 'end' : 'none'
+                )}
+                title={selectedElement.arrowHeadType === 'none' ? 'Arrowheads Hidden' : 'Hide Arrowheads'}
+                className={`p-1 rounded ${selectedElement.arrowHeadType === 'none' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}
+              >
+                <Minus className="w-3.5 h-3.5" />
               </button>
             </div>
           ) : (
@@ -706,22 +742,14 @@ export const CanvasWorkspace: React.FC<CanvasWorkspaceProps> = ({
               const x2 = el.toPoint?.x || el.x + 100;
               const y2 = el.toPoint?.y || el.y + 50;
 
-              const style = el.connectorStyle || 'curved';
-              let pathD = '';
-
-              if (style === 'straight') {
-                pathD = `M ${x1} ${y1} L ${x2} ${y2}`;
-              } else if (style === 'orthogonal') {
-                const midX = (x1 + x2) / 2;
-                pathD = `M ${x1} ${y1} L ${midX} ${y1} L ${midX} ${y2} L ${x2} ${y2}`;
-              } else {
-                // Curved Bezier
-                const midX = (x1 + x2) / 2;
-                pathD = `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`;
-              }
+              const appearance = getConnectorAppearance(el);
+              const pathD = buildConnectorPath(
+                appearance.geometry,
+                { x: x1, y: y1 },
+                { x: x2, y: y2 }
+              );
 
               const isSelected = selectedElementId === el.id;
-              const hasStartArrow = el.arrowHeadType === 'both';
 
               return (
                 <g key={el.id} onMouseDown={e => handleElementMouseDown(e, el)} className="cursor-pointer">
@@ -738,9 +766,9 @@ export const CanvasWorkspace: React.FC<CanvasWorkspaceProps> = ({
                     fill="none"
                     stroke={isSelected ? '#6366f1' : (isDarkMode ? '#818cf8' : '#4f46e5')}
                     strokeWidth={isSelected ? '2.5' : '2'}
-                    strokeDasharray={style === 'dashed' ? '6,4' : undefined}
-                    markerStart={hasStartArrow ? 'url(#arrowhead-start)' : undefined}
-                    markerEnd="url(#arrowhead)"
+                    strokeDasharray={appearance.dashed ? '6,4' : undefined}
+                    markerStart={appearance.markerStart ? 'url(#arrowhead-start)' : undefined}
+                    markerEnd={appearance.markerEnd ? 'url(#arrowhead)' : undefined}
                   />
                 </g>
               );

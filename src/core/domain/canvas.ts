@@ -17,6 +17,7 @@ export type CanvasElementType =
   | 'connector';
 
 export type ConnectorStyle = 'curved' | 'orthogonal' | 'straight' | 'dashed';
+export type ConnectorLineStyle = 'solid' | 'dashed';
 export type ArrowHeadType = 'end' | 'both' | 'none';
 
 export interface CanvasElement {
@@ -38,6 +39,7 @@ export interface CanvasElement {
   fromPoint?: { x: number; y: number };
   toPoint?: { x: number; y: number };
   connectorStyle?: ConnectorStyle;
+  connectorLineStyle?: ConnectorLineStyle;
   arrowHeadType?: ArrowHeadType;
 }
 

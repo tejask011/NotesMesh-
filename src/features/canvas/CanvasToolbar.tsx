@@ -1,5 +1,5 @@
 import React from 'react';
-import { CanvasElementType, ConnectorStyle, ArrowHeadType } from '../../core/domain/canvas';
+import { CanvasElementType, ConnectorStyle, ConnectorLineStyle, ArrowHeadType } from '../../core/domain/canvas';
 import { 
   MousePointer, 
   Square, 
@@ -18,7 +18,9 @@ import {
   Download,
   Spline,
   GitCommit,
-  Workflow
+  Workflow,
+  MoreHorizontal,
+  Minus
 } from 'lucide-react';
 
 interface CanvasToolbarProps {
@@ -26,6 +28,8 @@ interface CanvasToolbarProps {
   setActiveTool: (tool: CanvasElementType | 'select') => void;
   connectorStyle: ConnectorStyle;
   setConnectorStyle: (style: ConnectorStyle) => void;
+  connectorLineStyle: ConnectorLineStyle;
+  setConnectorLineStyle: (style: ConnectorLineStyle) => void;
   arrowHeadType: ArrowHeadType;
   setArrowHeadType: (head: ArrowHeadType) => void;
   isAutoConnecting: boolean;
@@ -45,6 +49,8 @@ export const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
   setActiveTool,
   connectorStyle,
   setConnectorStyle,
+  connectorLineStyle,
+  setConnectorLineStyle,
   arrowHeadType,
   setArrowHeadType,
   isAutoConnecting,
@@ -251,6 +257,21 @@ export const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
 
         <button
           onClick={() => {
+            setActiveTool('connector');
+            setConnectorLineStyle(connectorLineStyle === 'dashed' ? 'solid' : 'dashed');
+          }}
+          title={connectorLineStyle === 'dashed' ? 'Dashed Line Active' : 'Switch to Dashed Line'}
+          className={`p-1.5 rounded-lg text-xs transition-colors ${
+            connectorLineStyle === 'dashed'
+              ? 'bg-indigo-600 text-white'
+              : 'text-slate-400 hover:text-white'
+          }`}
+        >
+          <MoreHorizontal className="w-3.5 h-3.5" />
+        </button>
+
+        <button
+          onClick={() => {
             setArrowHeadType(arrowHeadType === 'both' ? 'end' : 'both');
           }}
           title={arrowHeadType === 'both' ? 'Bidirectional <--> Arrow Active' : 'Switch to Bidirectional <--> Arrow'}
@@ -261,6 +282,20 @@ export const CanvasToolbar: React.FC<CanvasToolbarProps> = ({
           }`}
         >
           &lt;-&gt;
+        </button>
+
+        <button
+          onClick={() => {
+            setArrowHeadType(arrowHeadType === 'none' ? 'end' : 'none');
+          }}
+          title={arrowHeadType === 'none' ? 'Arrowheads Hidden' : 'Hide Arrowheads'}
+          className={`p-1.5 rounded-lg text-xs transition-colors ${
+            arrowHeadType === 'none'
+              ? 'bg-indigo-600 text-white'
+              : 'text-slate-400 hover:text-white'
+          }`}
+        >
+          <Minus className="w-3.5 h-3.5" />
         </button>
       </div>
 
