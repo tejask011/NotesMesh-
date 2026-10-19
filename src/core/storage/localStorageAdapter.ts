@@ -2,6 +2,11 @@ import { Note } from '../domain/note';
 import { CanvasDocument } from '../domain/canvas';
 import { StorageAdapter } from './storageInterface';
 import { SAMPLE_NOTES, SAMPLE_CANVAS } from './sampleData';
+import {
+  normalizeCanvas,
+  normalizeNote,
+  parseWorkspaceBackup,
+} from './workspaceValidation';
 
 const NOTES_KEY = 'notemesh_notes_v4';
 const CANVASES_KEY = 'notemesh_canvases_v4';
@@ -42,8 +47,20 @@ export class LocalStorageAdapter implements StorageAdapter {
         await this.setNotes(cleaned);
         return cleaned;
       }
-      const parsed = JSON.parse(data) as Note[];
-      return parsed.map(cleanNote);
+      const parsed: unknown = JSON.parse(data);
+      if (!Array.isArray(parsed)) {
+        console.error('Stored notes are not an array, falling back to the sample workspace');
+        return SAMPLE_NOTES.map(cleanNote);
+      }
+      const notes = parsed
+        .map(normalizeNote)
+        .filter((note): note is Note => note !== null)
+        .map(cleanNote);
+      if (notes.length === 0 && parsed.length > 0) {
+        console.error('Stored notes are malformed, falling back to the sample workspace');
+        return SAMPLE_NOTES.map(cleanNote);
+      }
+      return notes;
     } catch (e) {
       console.error('Failed to load notes from localStorage', e);
       return SAMPLE_NOTES.map(cleanNote);
@@ -86,7 +103,19 @@ export class LocalStorageAdapter implements StorageAdapter {
         await this.setCanvases([SAMPLE_CANVAS]);
         return [SAMPLE_CANVAS];
       }
-      return JSON.parse(data) as CanvasDocument[];
+      const parsed: unknown = JSON.parse(data);
+      if (!Array.isArray(parsed)) {
+        console.error('Stored canvases are not an array, falling back to the sample board');
+        return [SAMPLE_CANVAS];
+      }
+      const canvases = parsed
+        .map(normalizeCanvas)
+        .filter((canvas): canvas is CanvasDocument => canvas !== null);
+      if (canvases.length === 0 && parsed.length > 0) {
+        console.error('Stored canvases are malformed, falling back to the sample board');
+        return [SAMPLE_CANVAS];
+      }
+      return canvases;
     } catch (e) {
       console.error('Failed to load canvases', e);
       return [SAMPLE_CANVAS];
@@ -126,17 +155,29 @@ export class LocalStorageAdapter implements StorageAdapter {
   }
 
   async importAll(jsonString: string): Promise<boolean> {
+    const backup = parseWorkspaceBackup(jsonString);
+    if (!backup) {
+      console.error('Import failed: the file is not a valid NoteMesh workspace backup');
+      return false;
+    }
+
+    const notes = backup.notes ?? [];
+    const canvases = backup.canvases ?? [];
+    if (notes.length === 0 && canvases.length === 0 && backup.skipped > 0) {
+      console.error('Import failed: no usable notes or canvases found in the backup');
+      return false;
+    }
+
     try {
-      const data = JSON.parse(jsonString);
-      if (Array.isArray(data.notes)) {
-        await this.setNotes(data.notes);
+      if (backup.notes !== null) {
+        await this.setNotes(backup.notes);
       }
-      if (Array.isArray(data.canvases)) {
-        await this.setCanvases(data.canvases);
+      if (backup.canvases !== null) {
+        await this.setCanvases(backup.canvases);
       }
       return true;
     } catch (e) {
-      console.error('Import failed', e);
+      console.error('Import failed while writing the workspace', e);
       return false;
     }
   }
