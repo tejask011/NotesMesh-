@@ -3,6 +3,11 @@ import { Note, BacklinkItem } from '../../core/domain/note';
 import { MarkdownPreview } from './MarkdownPreview';
 import { BacklinksPanel } from './BacklinksPanel';
 import { BUILT_IN_TEMPLATES } from '../../core/templates/builtInTemplates';
+import {
+  prefixLines,
+  resolveEditorShortcut,
+  wrapSelection,
+} from '../../core/markdown/editorFormatting';
 import { stripAllEmojis } from '../../core/storage/localStorageAdapter';
 import { 
   Columns, 
@@ -115,27 +120,59 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  const insertFormatting = (prefix: string, suffix: string = '') => {
+  const insertFormatting = (prefix: string, suffix: string = prefix) => {
     const textarea = textareaRef.current;
     if (!textarea) return;
 
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const text = textarea.value;
-    const selected = text.substring(start, end);
+    const result = wrapSelection(
+      {
+        text: textarea.value,
+        start: textarea.selectionStart,
+        end: textarea.selectionEnd,
+      },
+      prefix,
+      suffix
+    );
 
-    const replacement = `${prefix}${selected || 'text'}${suffix}`;
-    const nextContent = text.substring(0, start) + replacement + text.substring(end);
-
-    handleContentChange(nextContent);
+    handleContentChange(result.text);
 
     setTimeout(() => {
       textarea.focus();
-      textarea.setSelectionRange(
-        start + prefix.length,
-        start + prefix.length + (selected ? selected.length : 4)
-      );
+      textarea.setSelectionRange(result.start, result.end);
     }, 0);
+  };
+
+  const insertLinePrefix = (prefix: string) => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    const result = prefixLines(
+      {
+        text: textarea.value,
+        start: textarea.selectionStart,
+        end: textarea.selectionEnd,
+      },
+      prefix
+    );
+
+    handleContentChange(result.text);
+
+    setTimeout(() => {
+      textarea.focus();
+      textarea.setSelectionRange(result.start, result.end);
+    }, 0);
+  };
+
+  const handleEditorKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const shortcut = resolveEditorShortcut(event);
+    if (!shortcut) return;
+
+    event.preventDefault();
+    if (shortcut === 'bold') {
+      insertFormatting('**', '**');
+    } else {
+      insertFormatting('*', '*');
+    }
   };
 
   const handleWikilinkNavigation = (targetTitle: string) => {
@@ -302,14 +339,14 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
                 <Italic className="w-4 h-4" />
               </button>
               <button
-                onClick={() => insertFormatting('# ')}
+                onClick={() => insertLinePrefix('# ')}
                 title="Heading 1"
                 className="p-1 rounded hover:bg-slate-800 hover:text-white transition-colors"
               >
                 <Heading1 className="w-4 h-4" />
               </button>
               <button
-                onClick={() => insertFormatting('## ')}
+                onClick={() => insertLinePrefix('## ')}
                 title="Heading 2"
                 className="p-1 rounded hover:bg-slate-800 hover:text-white transition-colors"
               >
@@ -324,7 +361,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
                 <span>[[]]</span>
               </button>
               <button
-                onClick={() => insertFormatting('- ')}
+                onClick={() => insertLinePrefix('- ')}
                 title="Bullet List"
                 className="p-1 rounded hover:bg-slate-800 hover:text-white transition-colors"
               >
@@ -390,6 +427,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
               ref={textareaRef}
               value={note.content}
               onChange={e => handleContentChange(e.target.value)}
+              onKeyDown={handleEditorKeyDown}
               placeholder="Write your note here... Use [[Note Title]] to connect ideas seamlessly."
               className="flex-1 p-6 bg-transparent text-slate-200 font-mono text-sm leading-relaxed resize-none focus:outline-none overflow-y-auto selection:bg-indigo-500/25 placeholder:text-slate-600"
             />
