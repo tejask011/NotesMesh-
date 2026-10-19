@@ -68,7 +68,7 @@ export const MyCustomPlugin: PluginInstance = {
 | `context.addStatusBarItem(item)` | Renders status indicators in the bottom application bar |
 | `context.updateStatusBarItem(id, text)` | Updates status text dynamically |
 | `context.getCurrentNoteContent()` | Reads the currently active note Markdown string |
-| `context.onNoteChange(callback)` | Listens for live typing and note updates |
+| `context.onNoteChange(callback)` | Listens for live typing and note updates. Returns an unsubscribe function; the manager also releases listeners automatically when the plugin is disabled |
 
 ---
 

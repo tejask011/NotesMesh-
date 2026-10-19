@@ -28,7 +28,7 @@ export interface PluginContext {
   }) => void;
   updateStatusBarItem: (id: string, text: string) => void;
   getCurrentNoteContent: () => string;
-  onNoteChange?: (callback: (content: string) => void) => void;
+  onNoteChange?: (callback: (content: string) => void) => (() => void) | void;
 }
 
 export interface PluginInstance {

@@ -21,7 +21,9 @@ export class PluginManager {
   private commands: Map<string, RegisteredCommand> = new Map();
   private statusBarItems: Map<string, StatusBarItem> = new Map();
   private listeners: Set<() => void> = new Set();
-  private noteChangeListeners: Set<(content: string) => void> = new Set();
+  private noteChangeListeners: Map<string, Set<(content: string) => void>> = new Map();
+  private activatingPlugins: Set<string> = new Set();
+  private activePlugins: Set<string> = new Set();
   private currentContentProvider: () => string = () => '';
 
   setCurrentContentProvider(provider: () => string) {
@@ -29,25 +31,39 @@ export class PluginManager {
   }
 
   notifyNoteChanged(content: string) {
-    this.noteChangeListeners.forEach(cb => {
-      try {
-        cb(content);
-      } catch (err) {
-        console.error('Plugin onNoteChange listener error:', err);
-      }
+    this.noteChangeListeners.forEach(pluginListeners => {
+      pluginListeners.forEach(cb => {
+        try {
+          cb(content);
+        } catch (err) {
+          console.error('Plugin onNoteChange listener error:', err);
+        }
+      });
     });
   }
 
   registerPlugin(plugin: PluginInstance) {
-    this.plugins.set(plugin.manifest.id, plugin);
+    const pluginId = plugin.manifest.id;
+    const existing = this.plugins.get(pluginId);
+    if (existing === plugin) return;
+
+    if (existing) {
+      this.removePluginRegistrations(pluginId);
+      this.noteChangeListeners.delete(pluginId);
+    }
+
+    this.plugins.set(pluginId, plugin);
     if (plugin.enabled) {
-      this.activatePlugin(plugin.manifest.id);
+      this.activatePlugin(pluginId);
     }
   }
 
   async activatePlugin(pluginId: string): Promise<boolean> {
     const plugin = this.plugins.get(pluginId);
     if (!plugin) return false;
+    if (this.activePlugins.has(pluginId) || this.activatingPlugins.has(pluginId)) return true;
+
+    this.activatingPlugins.add(pluginId);
 
     const context: PluginContext = {
       registerCommand: cmd => {
@@ -74,18 +90,32 @@ export class PluginManager {
       },
       getCurrentNoteContent: () => this.currentContentProvider(),
       onNoteChange: cb => {
-        this.noteChangeListeners.add(cb);
+        let pluginListeners = this.noteChangeListeners.get(pluginId);
+        if (!pluginListeners) {
+          pluginListeners = new Set();
+          this.noteChangeListeners.set(pluginId, pluginListeners);
+        }
+        pluginListeners.add(cb);
+
+        return () => {
+          pluginListeners?.delete(cb);
+        };
       },
     };
 
     try {
       await plugin.onLoad(context);
+      this.activePlugins.add(pluginId);
       plugin.enabled = true;
       this.notifyState();
       return true;
     } catch (err) {
       console.error(`Failed to activate plugin ${pluginId}:`, err);
+      this.removePluginRegistrations(pluginId);
+      this.noteChangeListeners.delete(pluginId);
       return false;
+    } finally {
+      this.activatingPlugins.delete(pluginId);
     }
   }
 
@@ -93,13 +123,23 @@ export class PluginManager {
     const plugin = this.plugins.get(pluginId);
     if (!plugin) return false;
 
-    try {
-      await plugin.onUnload();
-    } catch (err) {
-      console.error(`Error unloading plugin ${pluginId}:`, err);
+    if (this.activePlugins.has(pluginId)) {
+      try {
+        await plugin.onUnload();
+      } catch (err) {
+        console.error(`Error unloading plugin ${pluginId}:`, err);
+      }
     }
 
-    // Clean up commands and status bar items registered by this plugin
+    this.activePlugins.delete(pluginId);
+    this.removePluginRegistrations(pluginId);
+    this.noteChangeListeners.delete(pluginId);
+    plugin.enabled = false;
+    this.notifyState();
+    return true;
+  }
+
+  private removePluginRegistrations(pluginId: string) {
     for (const [key, cmd] of Array.from(this.commands.entries())) {
       if (cmd.pluginId === pluginId) {
         this.commands.delete(key);
@@ -111,10 +151,6 @@ export class PluginManager {
         this.statusBarItems.delete(key);
       }
     }
-
-    plugin.enabled = false;
-    this.notifyState();
-    return true;
   }
 
   getAllPlugins(): PluginInstance[] {
