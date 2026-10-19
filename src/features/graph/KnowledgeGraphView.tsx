@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react'
 import { Note } from '../../core/domain/note';
 import { GraphNode, GraphFilterConfig } from '../../core/domain/graph';
 import { buildGraphData } from '../../core/graph/graphBuilder';
+import { Viewport, screenToWorld, zoomViewportAt, resizeViewport } from '../../core/graph/viewport';
 import { GraphControls } from './GraphControls';
 import { ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
 
@@ -35,7 +36,7 @@ export const KnowledgeGraphView: React.FC<KnowledgeGraphViewProps> = ({
   }, [notes]);
 
   // Viewport transforms (Pan & Zoom)
-  const [viewport, setViewport] = useState({ x: 0, y: 0, zoom: 1 });
+  const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const [hoveredNode, setHoveredNode] = useState<GraphNode | null>(null);
 
   // Dragging state
@@ -91,7 +92,8 @@ export const KnowledgeGraphView: React.FC<KnowledgeGraphViewProps> = ({
     simNodesRef.current = nextMap;
   }, [graphData]);
 
-  // Center viewport on initial mount & canvas resize
+  // Center the world origin on mount. Container resizes are handled by the
+  // ResizeObserver below without resetting zoom.
   const recenter = useCallback(() => {
     if (canvasRef.current) {
       setViewport({
@@ -105,6 +107,58 @@ export const KnowledgeGraphView: React.FC<KnowledgeGraphViewProps> = ({
   useEffect(() => {
     recenter();
   }, [recenter]);
+
+  const zoomAt = useCallback((screenX: number, screenY: number, factor: number) => {
+    setViewport(prev => zoomViewportAt(prev, screenX, screenY, factor));
+  }, []);
+
+  const zoomAtCenter = useCallback(
+    (factor: number) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      zoomAt(canvas.clientWidth / 2, canvas.clientHeight / 2, factor);
+    },
+    [zoomAt]
+  );
+
+  // Native wheel listener: React registers wheel handlers as passive at the
+  // root, which makes preventDefault unreliable and logs a console warning.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const factor = event.deltaY < 0 ? 1.08 : 0.92;
+      zoomAt(event.clientX - rect.left, event.clientY - rect.top, factor);
+    };
+
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', handleWheel);
+  }, [zoomAt]);
+
+  // Keep the visible center stable when the container changes size.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || typeof ResizeObserver === 'undefined') return;
+
+    let previous = { width: canvas.clientWidth, height: canvas.clientHeight };
+
+    const observer = new ResizeObserver(entries => {
+      const rect = entries[0]?.contentRect;
+      if (!rect || rect.width === 0 || rect.height === 0) return;
+
+      const next = { width: rect.width, height: rect.height };
+      const from = previous;
+      previous = next;
+
+      setViewport(prev => resizeViewport(prev, from.width, from.height, next.width, next.height));
+    });
+
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
 
   const resetSimulation = useCallback(() => {
     simNodesRef.current.forEach((node, _, map) => {
@@ -295,13 +349,6 @@ export const KnowledgeGraphView: React.FC<KnowledgeGraphViewProps> = ({
     return () => cancelAnimationFrame(animId);
   }, [graphData, filterConfig, viewport, hoveredNode, isDarkMode]);
 
-  const screenToWorld = (screenX: number, screenY: number) => {
-    return {
-      x: (screenX - viewport.x) / viewport.zoom,
-      y: (screenY - viewport.y) / viewport.zoom,
-    };
-  };
-
   const getNodeAtPoint = (worldX: number, worldY: number): GraphNode | null => {
     const nodes = Array.from(simNodesRef.current.values());
     for (const node of nodes) {
@@ -321,7 +368,7 @@ export const KnowledgeGraphView: React.FC<KnowledgeGraphViewProps> = ({
     if (!rect) return;
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
-    const world = screenToWorld(mouseX, mouseY);
+    const world = screenToWorld(viewport, mouseX, mouseY);
 
     const hit = getNodeAtPoint(world.x, world.y);
     if (hit) {
@@ -354,7 +401,7 @@ export const KnowledgeGraphView: React.FC<KnowledgeGraphViewProps> = ({
         y: mouseY - dragRef.current.startY,
       }));
     } else if (dragRef.current.draggedNodeId) {
-      const world = screenToWorld(mouseX, mouseY);
+      const world = screenToWorld(viewport, mouseX, mouseY);
       const node = simNodesRef.current.get(dragRef.current.draggedNodeId);
       if (node) {
         node.x = world.x;
@@ -363,7 +410,7 @@ export const KnowledgeGraphView: React.FC<KnowledgeGraphViewProps> = ({
         node.vy = 0;
       }
     } else {
-      const world = screenToWorld(mouseX, mouseY);
+      const world = screenToWorld(viewport, mouseX, mouseY);
       const hit = getNodeAtPoint(world.x, world.y);
       setHoveredNode(hit);
     }
@@ -390,15 +437,6 @@ export const KnowledgeGraphView: React.FC<KnowledgeGraphViewProps> = ({
     dragRef.current.isDraggingCanvas = false;
   };
 
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const zoomFactor = e.deltaY < 0 ? 1.08 : 0.92;
-    setViewport(prev => ({
-      ...prev,
-      zoom: Math.min(2.5, Math.max(0.3, prev.zoom * zoomFactor)),
-    }));
-  };
-
   return (
     <div className="relative w-full h-[calc(100vh-5.5rem)] bg-background overflow-hidden">
       {/* Floating Controls Panel */}
@@ -412,14 +450,14 @@ export const KnowledgeGraphView: React.FC<KnowledgeGraphViewProps> = ({
       {/* Floating Zoom & Center bar */}
       <div className="absolute bottom-6 left-6 z-10 flex items-center space-x-1.5 bg-surface/90 dark:bg-slate-900/90 backdrop-blur-md border border-border dark:border-slate-800 p-1.5 rounded-xl shadow-xl text-slate-400">
         <button
-          onClick={() => setViewport(v => ({ ...v, zoom: Math.min(2.5, v.zoom * 1.2) }))}
+          onClick={() => zoomAtCenter(1.2)}
           title="Zoom In"
           className="p-2 hover:bg-surface-hover dark:hover:bg-slate-800 rounded-lg hover:text-indigo-400 transition-colors"
         >
           <ZoomIn className="w-4 h-4" />
         </button>
         <button
-          onClick={() => setViewport(v => ({ ...v, zoom: Math.max(0.3, v.zoom / 1.2) }))}
+          onClick={() => zoomAtCenter(1 / 1.2)}
           title="Zoom Out"
           className="p-2 hover:bg-surface-hover dark:hover:bg-slate-800 rounded-lg hover:text-indigo-400 transition-colors"
         >
@@ -441,7 +479,6 @@ export const KnowledgeGraphView: React.FC<KnowledgeGraphViewProps> = ({
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
-        onWheel={handleWheel}
         className="w-full h-full cursor-grab active:cursor-grabbing select-none"
       />
     </div>
