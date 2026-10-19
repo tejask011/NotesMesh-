@@ -265,6 +265,8 @@ export const KnowledgeGraphView: React.FC<KnowledgeGraphViewProps> = ({
 
         if (node.type === 'missing') {
           ctx.fillStyle = '#f59e0b';
+        } else if (node.type === 'tag') {
+          ctx.fillStyle = node.color || '#ec4899';
         } else if (filterConfig.colorMode !== 'type' && node.color) {
           ctx.fillStyle = node.color;
         } else if (node.isOrphan) {

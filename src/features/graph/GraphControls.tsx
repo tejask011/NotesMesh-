@@ -88,6 +88,16 @@ export const GraphControls: React.FC<GraphControlsProps> = ({
           />
         </label>
 
+        <label className="flex items-center justify-between cursor-pointer py-0.5">
+          <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">Show Tag Nodes</span>
+          <input
+            type="checkbox"
+            checked={config.showTags}
+            onChange={e => onChangeConfig({ ...config, showTags: e.target.checked })}
+            className="w-4 h-4 rounded border-border text-indigo-600 focus:ring-indigo-500"
+          />
+        </label>
+
         {availableTags.length > 0 && (
           <div className="pt-1">
             <label className="block text-slate-400 text-xs uppercase font-bold mb-1.5">
