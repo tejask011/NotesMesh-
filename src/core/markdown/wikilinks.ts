@@ -1,4 +1,5 @@
 import { Note, NoteLink, BacklinkItem } from '../domain/note';
+import { maskCodeRegions } from './codeRegions';
 
 /**
  * Regex to match [[Wikilinks]] or [[Target|Alias]]
@@ -18,10 +19,12 @@ export function extractWikilinks(content: string, sourceNoteId: string): NoteLin
   if (!content) return links;
   let match: RegExpExecArray | null;
 
+  const searchable = maskCodeRegions(content);
+
   // Reset regex state
   WIKILINK_REGEX.lastIndex = 0;
 
-  while ((match = WIKILINK_REGEX.exec(content)) !== null) {
+  while ((match = WIKILINK_REGEX.exec(searchable)) !== null) {
     const rawInner = match[1].trim();
     // Support alias syntax: [[Target Note|Displayed Alias]]
     const parts = rawInner.split('|');
@@ -45,8 +48,10 @@ export function extractTags(content: string): string[] {
   if (!content) return [];
   let match: RegExpExecArray | null;
 
+  const searchable = maskCodeRegions(content);
+
   TAG_REGEX.lastIndex = 0;
-  while ((match = TAG_REGEX.exec(content)) !== null) {
+  while ((match = TAG_REGEX.exec(searchable)) !== null) {
     const tag = match[1].trim();
     if (tag) {
       tags.add(tag);

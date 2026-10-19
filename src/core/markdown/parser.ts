@@ -1,4 +1,5 @@
 import { Marked, Tokens } from 'marked';
+import { transformOutsideFences } from './codeRegions';
 
 interface WikilinkToken {
   type: 'wikilink';
@@ -61,8 +62,11 @@ export function createMarkedInstance(existingTitles: Set<string>) {
 
 export function renderMarkdown(markdown: string, existingTitles: Set<string>): string {
   if (!markdown) return '';
-  // Normalize headings typed without spaces like "##hello" -> "## hello"
-  const normalized = markdown.replace(/^(#{1,6})([^\s#])/gm, '$1 $2');
+  // Normalize headings typed without spaces like "##hello" -> "## hello".
+  // Fenced code lines are skipped so shebangs and shell comments stay intact.
+  const normalized = transformOutsideFences(markdown, line =>
+    line.replace(/^(#{1,6})([^\s#])/, '$1 $2')
+  );
   const instance = createMarkedInstance(existingTitles);
   return instance.parse(normalized) as string;
 }
