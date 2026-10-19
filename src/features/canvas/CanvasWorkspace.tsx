@@ -1,7 +1,8 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Note } from '../../core/domain/note';
 import { CanvasDocument, CanvasElement, CanvasElementType, ConnectorStyle, ArrowHeadType } from '../../core/domain/canvas';
 import { CanvasToolbar } from './CanvasToolbar';
+import { CanvasShortcut, resolveCanvasShortcut } from '../../core/canvas/shortcuts';
 import { 
   FileText, 
   Trash2, 
@@ -108,11 +109,19 @@ export const CanvasWorkspace: React.FC<CanvasWorkspaceProps> = ({
     onUpdateCanvas({ ...canvasDoc, elements: newElements });
   };
 
+  const applyHistoryElements = (elements: CanvasElement[]) => {
+    setSelectedElementId(prev =>
+      prev && elements.some(el => el.id === prev) ? prev : null
+    );
+    setEditingElementId(null);
+    onUpdateCanvas({ ...canvasDoc, elements });
+  };
+
   const handleUndo = () => {
     if (historyIndex > 0) {
       const prev = history[historyIndex - 1];
       setHistoryIndex(historyIndex - 1);
-      onUpdateCanvas({ ...canvasDoc, elements: prev });
+      applyHistoryElements(prev);
     }
   };
 
@@ -120,9 +129,25 @@ export const CanvasWorkspace: React.FC<CanvasWorkspaceProps> = ({
     if (historyIndex < history.length - 1) {
       const next = history[historyIndex + 1];
       setHistoryIndex(historyIndex + 1);
-      onUpdateCanvas({ ...canvasDoc, elements: next });
+      applyHistoryElements(next);
     }
   };
+
+  const canvasIdRef = useRef(canvasDoc.id);
+
+  // A different document means a different history. Without this, undo can
+  // write the previously opened canvas into the active one.
+  useEffect(() => {
+    if (canvasIdRef.current === canvasDoc.id) return;
+
+    canvasIdRef.current = canvasDoc.id;
+    setHistory([canvasDoc.elements]);
+    setHistoryIndex(0);
+    setSelectedElementId(null);
+    setEditingElementId(null);
+    setIsNoteSelectorOpen(false);
+    setPan(canvasDoc.viewport || { x: 0, y: 0, zoom: 1 });
+  }, [canvasDoc]);
 
   const screenToCanvas = (clientX: number, clientY: number) => {
     const rect = containerRef.current?.getBoundingClientRect();
@@ -400,8 +425,16 @@ export const CanvasWorkspace: React.FC<CanvasWorkspaceProps> = ({
     }
 
     if (draggedElementRef.current) {
+      const drag = draggedElementRef.current;
       draggedElementRef.current = null;
-      pushHistory(canvasDoc.elements);
+
+      // Selecting a shape also sets the drag ref. Only record history when the
+      // element actually moved, otherwise a plain click adds a duplicate step.
+      const moved = canvasDoc.elements.some(
+        el => el.id === drag.id && (el.x !== drag.initialX || el.y !== drag.initialY)
+      );
+
+      if (moved) pushHistory(canvasDoc.elements);
     }
   };
 
@@ -431,6 +464,59 @@ export const CanvasWorkspace: React.FC<CanvasWorkspaceProps> = ({
     pushHistory([...canvasDoc.elements, clone]);
     setSelectedElementId(clone.id);
   };
+
+  // The keydown listener is registered once, so it dispatches through a ref to
+  // always reach the handlers from the latest render.
+  const shortcutActionsRef = useRef<(shortcut: CanvasShortcut) => void>(() => {});
+
+  useEffect(() => {
+    shortcutActionsRef.current = shortcut => {
+      switch (shortcut) {
+        case 'undo':
+          handleUndo();
+          break;
+        case 'redo':
+          handleRedo();
+          break;
+        case 'delete':
+          handleDeleteSelected();
+          break;
+        case 'duplicate':
+          handleDuplicateSelected();
+          break;
+        case 'cancel':
+          setIsAutoConnecting(false);
+          setConnectSourceId(null);
+          setEditingElementId(null);
+          setSelectedElementId(null);
+          setActiveTool('select');
+          break;
+      }
+    };
+  });
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      const isEditable = Boolean(
+        target &&
+          (tag === 'INPUT' ||
+            tag === 'TEXTAREA' ||
+            tag === 'SELECT' ||
+            target.isContentEditable)
+      );
+
+      const shortcut = resolveCanvasShortcut(event, isEditable);
+      if (!shortcut) return;
+
+      event.preventDefault();
+      shortcutActionsRef.current(shortcut);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const handleChangeElementColor = (id: string, color: string) => {
     const next = canvasDoc.elements.map(el => (el.id === id ? { ...el, color } : el));
@@ -579,7 +665,7 @@ export const CanvasWorkspace: React.FC<CanvasWorkspaceProps> = ({
           <button
             onClick={handleDuplicateSelected}
             className="text-slate-300 hover:text-indigo-400 flex items-center space-x-1"
-            title="Duplicate"
+            title="Duplicate (Ctrl+D)"
           >
             <Copy className="w-3.5 h-3.5" />
             <span>Duplicate</span>
@@ -588,7 +674,7 @@ export const CanvasWorkspace: React.FC<CanvasWorkspaceProps> = ({
           <button
             onClick={handleDeleteSelected}
             className="text-rose-400 hover:text-rose-500 flex items-center space-x-1"
-            title="Delete"
+            title="Delete (Del)"
           >
             <Trash2 className="w-3.5 h-3.5" />
             <span>Delete</span>
