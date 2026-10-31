@@ -38,14 +38,17 @@ Most productivity tools scatter your knowledge: notes live in one tool, mind map
 | **Markdown Notes** | Full GFM editor, live split preview, folder organization, tag filtering | Complete | `src/features/notes/` |
 | **Bidirectional Links** | `[[Note Title]]` & `[[Note|Alias]]` parsing, automatic backlinks panel | Complete | `src/core/markdown/` |
 | **Note Templates** | Daily Notes, Meeting Minutes, ADRs, Research Notes with 1-click insertion | Complete | `src/core/templates/` |
-| **Knowledge Graph** | Physics simulation, Color by Type/Folder/Tag, in-graph search, orphan toggles | Complete | `src/features/graph/` |
-| **Visual Canvas** | Rectangles, diamonds, sticky notes, curved connectors, duplicate, **Linked Note Cards** | Complete | `src/features/canvas/` |
+| **Knowledge Graph** | Physics simulation, Color by Type/Folder/Tag, in-graph search, orphan toggles, connection depth filter, touch & keyboard control | Complete | `src/features/graph/` |
+| **Visual Canvas** | Multiple named boards, multi-select, touch & keyboard control, rectangles, diamonds, sticky notes, curved connectors, duplicate, **Linked Note Cards** | Complete | `src/features/canvas/` |
 | **Plugin System** | Sandboxed manifest, command registration, live status bar, 3 sample plugins | Complete | `src/core/plugins/` |
 | **Theme Engine** | Dark mode & Light mode with CSS variables & Tailwind tokens | Complete | `src/styles/index.css` |
 | **Command Palette** | Quick note navigation & plugin action runner (`Ctrl+K` / `Cmd+K`) | Complete | `src/components/CommandPalette.tsx` |
-| **Storage & Backup** | LocalStorage / IndexedDB storage abstraction + JSON workspace backup | Complete | `src/core/storage/` |
-| **Canvas Export** | SVG diagram export | Complete | `src/features/canvas/` |
-| **KaTeX Math & Mermaid** | In-editor LaTeX math rendering and flowchart syntax | In Progress | [Roadmap](./docs/roadmap.md) |
+| **Storage & Backup** | IndexedDB with migrations, validated backups, save status, snapshots and a recovery screen ([format](./docs/data-format.md)) | Complete | `src/core/storage/` |
+| **Sync (optional)** | Off by default. Manual, serverless file sync with defined conflict handling ([details](./docs/sync.md)) | Complete | `src/core/sync/` |
+| **Local Search** | Relevance search and related notes, computed on your device | Complete | `src/core/search/` |
+| **Canvas Export** | Whole-board SVG, PNG and JSON export | Complete | `src/features/canvas/` |
+| **KaTeX Math & Mermaid** | LaTeX math and diagrams in the preview, loaded on demand and offline | Complete | `src/features/notes/richContent.ts` |
+| **Collaboration** | Real-time co-editing | Not started, by design | [Roadmap](./docs/roadmap.md) |
 | **Desktop Build (Tauri)** | Native local filesystem access via Rust / Tauri | Planned | [Roadmap](./docs/roadmap.md) |
 
 ---
@@ -66,9 +69,7 @@ We welcome new contributors! As project administrators, we ensure beginner-frien
 ### Intermediate & Advanced Community Issues
 | ID | Area | Task | Skills Needed |
 | :--- | :--- | :--- | :--- |
-| `#201` | **Markdown** | Implement Mermaid diagram rendering in Markdown preview | Markdown, Mermaid.js |
-| `#202` | **Canvas** | Add element multi-selection bounding box and group dragging | SVG, Geometry |
-| `#203` | **Storage** | Implement File System Access API adapter for opening local folders | Browser APIs |
+| `#203` | **Storage** | Implement a File System Access API `StorageBackend` for opening local folders | Browser APIs |
 | `#204` | **Graph** | Add 3D graph layout renderer option via Three.js / WebGL | 3D Graphics |
 
 ---
@@ -131,7 +132,11 @@ notemesh/
 │   │   ├── graph/          # Physics engine & graph data builder
 │   │   ├── markdown/       # Wikilinks, tags, and GFM compiler
 │   │   ├── plugins/        # Plugin manager & sample extensions
-│   │   ├── storage/        # Storage abstraction & LocalStorage adapter
+│   │   ├── storage/        # IndexedDB & localStorage engines, migrations, save queue
+│   │   ├── sync/           # Opt-in three-way merge and folder sync
+│   │   ├── search/         # Local relevance search
+│   │   ├── notes/          # Folders, tags, titles, import & export
+│   │   ├── canvas/         # Canvas operations & export
 │   │   └── templates/      # Reusable built-in note templates
 │   ├── features/
 │   │   ├── canvas/         # Freeform visual whiteboard & diagram editor

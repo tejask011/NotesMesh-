@@ -68,7 +68,29 @@ export const MyCustomPlugin: PluginInstance = {
 | `context.addStatusBarItem(item)` | Renders status indicators in the bottom application bar |
 | `context.updateStatusBarItem(id, text)` | Updates status text dynamically |
 | `context.getCurrentNoteContent()` | Reads the currently active note Markdown string |
-| `context.onNoteChange(callback)` | Listens for live typing and note updates |
+| `context.onNoteChange?.(callback)` | Listens for live typing and note updates. Optional, so call it with `?.` |
+
+### Keyboard shortcuts
+
+Pass `shortcut` to `registerCommand` to bind a key combo. It runs the command while the plugin is enabled:
+
+```typescript
+context.registerCommand({
+  id: 'reset-pomodoro',
+  title: 'Pomodoro: Reset Timer',
+  shortcut: 'Alt+Shift+P',
+  handler: () => {
+    context.updateStatusBarItem('pomodoro-timer', 'Focus: 25:00');
+  },
+});
+```
+
+Avoid combos browsers keep for themselves (`Ctrl+N`, `Ctrl+T`, `Ctrl+Shift+T`, `Ctrl+W`) and `Ctrl+Alt`, which means AltGr on many keyboards.
+
+### Lifecycle guarantees
+
+- Activating a plugin that's already active does nothing, so `onLoad` won't register listeners twice.
+- Disabling a plugin removes its commands, status bar items and `onNoteChange` listeners. Clean up anything else, such as timers, in `onUnload`.
 
 ---
 
