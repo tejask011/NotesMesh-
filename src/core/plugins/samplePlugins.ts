@@ -9,7 +9,8 @@ export const WordCountPlugin: PluginInstance = {
     id: 'notemesh-plugin-word-count',
     name: 'Word Count & Reading Time',
     version: '1.0.0',
-    description: 'Displays live word count, character count, and estimated reading time in the status bar.',
+    description:
+      'Displays live word count, character count, and estimated reading time in the status bar.',
     author: 'NoteMesh Community',
     permissions: ['statusbar'],
   },
@@ -86,7 +87,8 @@ export const TableOfContentsPlugin: PluginInstance = {
     id: 'notemesh-plugin-toc',
     name: 'Table of Contents Generator',
     version: '1.0.0',
-    description: 'Extracts all headings from the active note and copies a Markdown Table of Contents.',
+    description:
+      'Extracts all headings from the active note and copies a Markdown Table of Contents.',
     author: 'NoteMesh Community',
     permissions: ['commands'],
   },
@@ -95,7 +97,8 @@ export const TableOfContentsPlugin: PluginInstance = {
     context.registerCommand({
       id: 'generate-toc',
       title: 'Note: Copy Table of Contents to Clipboard',
-      shortcut: 'Ctrl+Shift+T',
+      // Ctrl+Shift+T can't be used: browsers reserve it for "reopen closed tab".
+      shortcut: 'Alt+Shift+T',
       handler: () => {
         const content = context.getCurrentNoteContent();
         const lines = content.split('\n');
@@ -107,7 +110,10 @@ export const TableOfContentsPlugin: PluginInstance = {
             const level = match[1].length;
             const title = match[2].trim();
             const indent = '  '.repeat(Math.max(0, level - 1));
-            const slug = title.toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
+            const slug = title
+              .toLowerCase()
+              .replace(/[^\w\s-]/g, '')
+              .replace(/\s+/g, '-');
             tocLines.push(`${indent}- [${title}](#${slug})`);
           }
         });

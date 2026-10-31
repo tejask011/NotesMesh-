@@ -1,4 +1,5 @@
 import { PluginInstance, PluginContext } from '../domain/plugin';
+import { matchesCombo } from '../shortcuts';
 
 export interface RegisteredCommand {
   id: string;
@@ -21,7 +22,8 @@ export class PluginManager {
   private commands: Map<string, RegisteredCommand> = new Map();
   private statusBarItems: Map<string, StatusBarItem> = new Map();
   private listeners: Set<() => void> = new Set();
-  private noteChangeListeners: Set<(content: string) => void> = new Set();
+  private noteChangeListeners: Map<string, Set<(content: string) => void>> = new Map();
+  private activePlugins: Set<string> = new Set();
   private currentContentProvider: () => string = () => '';
 
   setCurrentContentProvider(provider: () => string) {
@@ -29,12 +31,14 @@ export class PluginManager {
   }
 
   notifyNoteChanged(content: string) {
-    this.noteChangeListeners.forEach(cb => {
-      try {
-        cb(content);
-      } catch (err) {
-        console.error('Plugin onNoteChange listener error:', err);
-      }
+    this.noteChangeListeners.forEach(listeners => {
+      listeners.forEach(cb => {
+        try {
+          cb(content);
+        } catch (err) {
+          console.error('Plugin onNoteChange listener error:', err);
+        }
+      });
     });
   }
 
@@ -48,6 +52,9 @@ export class PluginManager {
   async activatePlugin(pluginId: string): Promise<boolean> {
     const plugin = this.plugins.get(pluginId);
     if (!plugin) return false;
+    // Activating twice would double-register listeners.
+    if (this.activePlugins.has(pluginId)) return true;
+    this.activePlugins.add(pluginId);
 
     const context: PluginContext = {
       registerCommand: cmd => {
@@ -74,7 +81,9 @@ export class PluginManager {
       },
       getCurrentNoteContent: () => this.currentContentProvider(),
       onNoteChange: cb => {
-        this.noteChangeListeners.add(cb);
+        const listeners = this.noteChangeListeners.get(pluginId) ?? new Set();
+        listeners.add(cb);
+        this.noteChangeListeners.set(pluginId, listeners);
       },
     };
 
@@ -85,6 +94,7 @@ export class PluginManager {
       return true;
     } catch (err) {
       console.error(`Failed to activate plugin ${pluginId}:`, err);
+      this.activePlugins.delete(pluginId);
       return false;
     }
   }
@@ -112,9 +122,22 @@ export class PluginManager {
       }
     }
 
+    this.noteChangeListeners.delete(pluginId);
+    this.activePlugins.delete(pluginId);
     plugin.enabled = false;
     this.notifyState();
     return true;
+  }
+
+  /** Run the enabled command bound to this key press, if any. Returns whether one ran. */
+  runShortcut(event: KeyboardEvent): boolean {
+    for (const command of this.commands.values()) {
+      if (command.shortcut && matchesCombo(event, command.shortcut)) {
+        command.handler();
+        return true;
+      }
+    }
+    return false;
   }
 
   getAllPlugins(): PluginInstance[] {
