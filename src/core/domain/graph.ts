@@ -41,4 +41,6 @@ export interface GraphFilterConfig {
   repelForce: number;
   collisionRadius: number;
   focusNodeId?: string | null;
+  /** Only show nodes within this many links of the focus node; null shows everything. */
+  maxDepth?: number | null;
 }

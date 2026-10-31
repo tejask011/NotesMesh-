@@ -2,17 +2,50 @@ import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react'
 import { Note } from '../../core/domain/note';
 import { GraphNode, GraphFilterConfig } from '../../core/domain/graph';
 import { buildGraphData } from '../../core/graph/graphBuilder';
+import {
+  ALPHA_DECAY,
+  ALPHA_MIN,
+  seedPosition,
+  stepSimulation,
+} from '../../core/graph/forceSimulation';
+import { collectAllTags } from '../../core/notes/tags';
 import { GraphControls } from './GraphControls';
 import { ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
 
 interface KnowledgeGraphViewProps {
   notes: Note[];
+  activeNoteId: string | null;
   onOpenNote: (noteId: string) => void;
   isDarkMode: boolean;
 }
 
+const MIN_ZOOM = 0.1;
+const MAX_ZOOM = 2.5;
+/** Total kinetic energy below which the layout counts as settled and animation stops. */
+const SETTLED_ENERGY = 0.05;
+/** Above this many nodes, labels only show when zoomed in, hovered or linked to the hover. */
+const LABEL_NODE_LIMIT = 200;
+const TAP_SLOP_PX = 5;
+const PAN_STEP_PX = 60;
+/**
+ * Paths are flushed at this size. Rasterizing cost grows with a path's size and
+ * self-overlap, so many small batches are far cheaper than one huge path, while
+ * still avoiding the cost of a separate draw call per edge or node.
+ */
+const PATH_BATCH_SIZE = 256;
+/**
+ * Long translucent lines are what limit the frame rate on a large graph (measured
+ * at 8 fps with them and 47 without at 3,000 nodes, even with a GPU). So while it's
+ * moving, a large graph draws a capped set of on-screen edges, then all of them once still.
+ */
+const MOVING_EDGE_LIMIT = 300;
+const INTERACTION_SETTLE_MS = 200;
+
+const clampZoom = (zoom: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
+
 export const KnowledgeGraphView: React.FC<KnowledgeGraphViewProps> = ({
   notes,
+  activeNoteId,
   onOpenNote,
   isDarkMode,
 }) => {
@@ -28,36 +61,110 @@ export const KnowledgeGraphView: React.FC<KnowledgeGraphViewProps> = ({
     linkDistance: 130,
     repelForce: 450,
     collisionRadius: 28,
+    focusNodeId: null,
+    maxDepth: null,
   });
 
-  const availableTags = useMemo(() => {
-    return Array.from(new Set(notes.flatMap(n => n.tags))).sort();
-  }, [notes]);
+  const availableTags = useMemo(() => collectAllTags(notes), [notes]);
 
-  // Viewport transforms (Pan & Zoom)
-  const [viewport, setViewport] = useState({ x: 0, y: 0, zoom: 1 });
-  const [hoveredNode, setHoveredNode] = useState<GraphNode | null>(null);
+  // Viewport transforms (Pan & Zoom). The ref is what the render loop reads.
+  const [viewport, setViewportState] = useState({ x: 0, y: 0, zoom: 1 });
+  const viewportRef = useRef(viewport);
 
-  // Dragging state
-  const dragRef = useRef<{
-    isDraggingCanvas: boolean;
-    draggedNodeId: string | null;
-    startX: number;
-    startY: number;
-  }>({
-    isDraggingCanvas: false,
-    draggedNodeId: null,
-    startX: 0,
-    startY: 0,
-  });
+  const hoveredNodeRef = useRef<GraphNode | null>(null);
+  const highlightedIdRef = useRef<string | null>(null);
+
+  // Active pointers, for pinch detection
+  const pointersRef = useRef(new Map<number, { x: number; y: number }>());
+  const gestureRef = useRef<
+    | { kind: 'pan'; startX: number; startY: number; originX: number; originY: number }
+    | { kind: 'node'; nodeId: string; startX: number; startY: number; moved: boolean }
+    | { kind: 'pinch'; distance: number; zoom: number }
+    | null
+  >(null);
+
+  // Force sliders only change the layout, so moving them shouldn't rebuild the graph.
+  const { linkDistance, repelForce, collisionRadius, ...structureConfig } = filterConfig;
+  const structureKey = JSON.stringify(structureConfig);
 
   // Graph data simulation state
   const graphData = useMemo(() => {
-    return buildGraphData(notes, filterConfig);
-  }, [notes, filterConfig]);
+    return buildGraphData(notes, {
+      ...structureConfig,
+      linkDistance,
+      repelForce,
+      collisionRadius,
+      focusNodeId: filterConfig.focusNodeId ?? activeNoteId,
+    });
+    // structureKey stands in for the structural fields of filterConfig.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notes, structureKey, activeNoteId]);
+
+  const fullNodeCount = useMemo(() => {
+    return buildGraphData(notes, {
+      ...filterConfig,
+      searchFilter: '',
+      tagFilter: null,
+      showOrphans: true,
+      showMissingLinks: true,
+      maxDepth: null,
+    }).nodes.length;
+    // Only the note set matters: this is the "of N" in "showing M of N".
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notes]);
 
   // Persistent simulated nodes
   const simNodesRef = useRef<Map<string, GraphNode>>(new Map());
+
+  // The render loop sleeps once settled; anything that changes the picture wakes it.
+  const animationRef = useRef<number | null>(null);
+  const tickRef = useRef<(time: number) => void>(() => {});
+  const lastTickRef = useRef<number | null>(null);
+  const isSettledRef = useRef(false);
+  const alphaRef = useRef(1);
+
+  const requestFrame = useCallback(() => {
+    if (animationRef.current === null) {
+      animationRef.current = requestAnimationFrame(time => {
+        animationRef.current = null;
+        tickRef.current(time);
+      });
+    }
+  }, []);
+
+  const reheat = useCallback(
+    (alpha = 1) => {
+      alphaRef.current = Math.max(alphaRef.current, alpha);
+      isSettledRef.current = false;
+      requestFrame();
+    },
+    [requestFrame]
+  );
+
+  // Until this time the user is panning or zooming, so drawing favors speed over completeness.
+  const interactingUntilRef = useRef(0);
+  const interactionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const setViewport = useCallback(
+    (update: (prev: typeof viewport) => typeof viewport) => {
+      const next = update(viewportRef.current);
+      viewportRef.current = next;
+      setViewportState(next);
+
+      interactingUntilRef.current = performance.now() + INTERACTION_SETTLE_MS;
+      if (interactionTimerRef.current) clearTimeout(interactionTimerRef.current);
+      // Once things stop moving, draw the complete picture.
+      interactionTimerRef.current = setTimeout(requestFrame, INTERACTION_SETTLE_MS);
+      requestFrame();
+    },
+    [requestFrame]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (interactionTimerRef.current) clearTimeout(interactionTimerRef.current);
+    };
+  }, []);
 
   // Initialize or update node positions centered at (0, 0)
   useEffect(() => {
@@ -65,58 +172,48 @@ export const KnowledgeGraphView: React.FC<KnowledgeGraphViewProps> = ({
     const nextMap = new Map<string, GraphNode>();
 
     graphData.nodes.forEach((node, i) => {
-      if (existing.has(node.id)) {
-        const old = existing.get(node.id)!;
-        nextMap.set(node.id, {
-          ...node,
-          x: old.x,
-          y: old.y,
-          vx: old.vx || 0,
-          vy: old.vy || 0,
-        });
+      const old = existing.get(node.id);
+      if (old) {
+        nextMap.set(node.id, { ...node, x: old.x, y: old.y, vx: old.vx || 0, vy: old.vy || 0 });
       } else {
-        // Distribute in a ring centered at (0, 0)
-        const angle = (i / Math.max(1, graphData.nodes.length)) * Math.PI * 2;
-        const radius = 100 + (i % 3) * 60;
-        nextMap.set(node.id, {
-          ...node,
-          x: Math.cos(angle) * radius,
-          y: Math.sin(angle) * radius,
-          vx: (Math.random() - 0.5) * 2,
-          vy: (Math.random() - 0.5) * 2,
-        });
+        nextMap.set(node.id, { ...node, ...seedPosition(i), vx: 0, vy: 0 });
       }
     });
 
     simNodesRef.current = nextMap;
-  }, [graphData]);
+    reheat();
+  }, [graphData, reheat]);
+
+  useEffect(() => {
+    reheat(0.5);
+  }, [linkDistance, repelForce, collisionRadius, reheat]);
+
+  useEffect(() => {
+    requestFrame();
+  }, [isDarkMode, filterConfig.colorMode, requestFrame]);
 
   // Center viewport on initial mount & canvas resize
   const recenter = useCallback(() => {
     if (canvasRef.current) {
-      setViewport({
-        x: canvasRef.current.clientWidth / 2,
-        y: canvasRef.current.clientHeight / 2,
-        zoom: 1,
-      });
+      const { clientWidth, clientHeight } = canvasRef.current;
+      setViewport(() => ({ x: clientWidth / 2, y: clientHeight / 2, zoom: 1 }));
     }
-  }, []);
+  }, [setViewport]);
 
   useEffect(() => {
     recenter();
   }, [recenter]);
 
   const resetSimulation = useCallback(() => {
-    simNodesRef.current.forEach((node, _, map) => {
-      const angle = Math.random() * Math.PI * 2;
-      const r = 80 + Math.random() * 140;
-      node.x = Math.cos(angle) * r;
-      node.y = Math.sin(angle) * r;
+    let index = 0;
+    simNodesRef.current.forEach(node => {
+      Object.assign(node, seedPosition(index));
       node.vx = (Math.random() - 0.5) * 4;
       node.vy = (Math.random() - 0.5) * 4;
-      map.set(node.id, node);
+      index += 1;
     });
-  }, []);
+    reheat();
+  }, [reheat]);
 
   // Main animation / simulation loop
   useEffect(() => {
@@ -125,301 +222,465 @@ export const KnowledgeGraphView: React.FC<KnowledgeGraphViewProps> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    let animId: number;
-
-    const simulateStep = () => {
-      const nodes = Array.from(simNodesRef.current.values());
-      const nodeMap = simNodesRef.current;
-
-      const repel = filterConfig.repelForce;
-      const linkDist = filterConfig.linkDistance;
-      const damping = 0.88;
-
-      // 1. Repulsion between all node pairs
-      for (let i = 0; i < nodes.length; i++) {
-        for (let j = i + 1; j < nodes.length; j++) {
-          const n1 = nodes[i];
-          const n2 = nodes[j];
-          if (n1.x === undefined || n1.y === undefined || n2.x === undefined || n2.y === undefined) continue;
-
-          const dx = n2.x - n1.x;
-          const dy = n2.y - n1.y;
-          const distSq = dx * dx + dy * dy || 1;
-          const dist = Math.sqrt(distSq);
-
-          if (dist < 450) {
-            const force = (repel / distSq);
-            const fx = (dx / dist) * force;
-            const fy = (dy / dist) * force;
-
-            if (dragRef.current.draggedNodeId !== n1.id) {
-              n1.vx = (n1.vx || 0) - fx;
-              n1.vy = (n1.vy || 0) - fy;
-            }
-            if (dragRef.current.draggedNodeId !== n2.id) {
-              n2.vx = (n2.vx || 0) + fx;
-              n2.vy = (n2.vy || 0) + fy;
-            }
-          }
-        }
-      }
-
-      // 2. Spring attraction along edges
-      for (const edge of graphData.edges) {
-        const source = nodeMap.get(edge.source);
-        const target = nodeMap.get(edge.target);
-        if (!source || !target || source.x === undefined || source.y === undefined || target.x === undefined || target.y === undefined) continue;
-
-        const dx = target.x - source.x;
-        const dy = target.y - source.y;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const diff = dist - linkDist;
-        const force = diff * 0.04;
-
-        const fx = (dx / dist) * force;
-        const fy = (dy / dist) * force;
-
-        if (dragRef.current.draggedNodeId !== source.id) {
-          source.vx = (source.vx || 0) + fx;
-          source.vy = (source.vy || 0) + fy;
-        }
-        if (dragRef.current.draggedNodeId !== target.id) {
-          target.vx = (target.vx || 0) - fx;
-          target.vy = (target.vy || 0) - fy;
-        }
-      }
-
-      // 3. Center gravity toward (0, 0)
-      for (const node of nodes) {
-        if (dragRef.current.draggedNodeId === node.id) continue;
-
-        const cdx = 0 - (node.x || 0);
-        const cdy = 0 - (node.y || 0);
-        node.vx = ((node.vx || 0) + cdx * 0.003) * damping;
-        node.vy = ((node.vy || 0) + cdy * 0.003) * damping;
-
-        node.x = (node.x || 0) + (node.vx || 0);
-        node.y = (node.y || 0) + (node.vy || 0);
-      }
-    };
-
     const render = () => {
       const dpr = window.devicePixelRatio || 1;
       const w = canvas.clientWidth;
       const h = canvas.clientHeight;
-      if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
-        canvas.width = w * dpr;
-        canvas.height = h * dpr;
+      const targetWidth = Math.round(w * dpr);
+      const targetHeight = Math.round(h * dpr);
+      if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
       }
+
+      const { x: vx, y: vy, zoom } = viewportRef.current;
+      const hoveredNode = hoveredNodeRef.current;
+      const highlightedId = highlightedIdRef.current;
+      const emphasizedId = hoveredNode?.id ?? highlightedId;
 
       ctx.save();
       ctx.scale(dpr, dpr);
       ctx.clearRect(0, 0, w, h);
 
       // Apply viewport pan and zoom
-      ctx.translate(viewport.x, viewport.y);
-      ctx.scale(viewport.zoom, viewport.zoom);
+      ctx.translate(vx, vy);
+      ctx.scale(zoom, zoom);
 
       const nodeMap = simNodesRef.current;
 
-      // Draw Edges
-      ctx.lineWidth = 1.4;
+      // World-space bounds of the screen, so offscreen work can be skipped
+      const margin = 40 / zoom;
+      const minX = -vx / zoom - margin;
+      const minY = -vy / zoom - margin;
+      const maxX = (w - vx) / zoom + margin;
+      const maxY = (h - vy) / zoom + margin;
+      const isVisible = (x: number, y: number) => x >= minX && x <= maxX && y >= minY && y <= maxY;
+
+      const isMoving = !isSettledRef.current || performance.now() < interactingUntilRef.current;
+      const simplifyEdges = isMoving && nodeMap.size > LABEL_NODE_LIMIT;
+      let edgesDrawn = 0;
+
+      // Draw Edges in batches
+      const neighbors = new Set<string>();
+      ctx.strokeStyle = isDarkMode ? 'rgba(99, 102, 241, 0.35)' : 'rgba(148, 163, 184, 0.7)';
+      ctx.lineWidth = 1.2;
+      let batched = 0;
+      ctx.beginPath();
       for (const edge of graphData.edges) {
         const source = nodeMap.get(edge.source);
         const target = nodeMap.get(edge.target);
         if (!source || !target || source.x === undefined || target.x === undefined) continue;
 
-        const isHighlighted = 
-          hoveredNode && (hoveredNode.id === source.id || hoveredNode.id === target.id);
+        if (emphasizedId && (edge.source === emphasizedId || edge.target === emphasizedId)) {
+          neighbors.add(edge.source);
+          neighbors.add(edge.target);
+          continue;
+        }
+        const sourceVisible = isVisible(source.x, source.y as number);
+        const targetVisible = isVisible(target.x, target.y as number);
+        if (!sourceVisible && !targetVisible) continue;
+        if (simplifyEdges && (!sourceVisible || !targetVisible || edgesDrawn >= MOVING_EDGE_LIMIT))
+          continue;
+        edgesDrawn += 1;
 
-        ctx.strokeStyle = isHighlighted
-          ? (isDarkMode ? '#38bdf8' : '#4f46e5')
-          : (isDarkMode ? 'rgba(99, 102, 241, 0.35)' : 'rgba(148, 163, 184, 0.7)');
-        ctx.lineWidth = isHighlighted ? 2.5 : 1.2;
+        ctx.moveTo(source.x, source.y as number);
+        ctx.lineTo(target.x, target.y as number);
+        if (++batched === PATH_BATCH_SIZE) {
+          ctx.stroke();
+          ctx.beginPath();
+          batched = 0;
+        }
+      }
+      ctx.stroke();
 
+      if (emphasizedId) {
         ctx.beginPath();
-        ctx.moveTo(source.x, source.y!);
-        ctx.lineTo(target.x, target.y!);
+        for (const edge of graphData.edges) {
+          if (edge.source !== emphasizedId && edge.target !== emphasizedId) continue;
+          const source = nodeMap.get(edge.source);
+          const target = nodeMap.get(edge.target);
+          if (!source || !target || source.x === undefined || target.x === undefined) continue;
+          ctx.moveTo(source.x, source.y as number);
+          ctx.lineTo(target.x, target.y as number);
+        }
+        ctx.strokeStyle = isDarkMode ? '#38bdf8' : '#4f46e5';
+        ctx.lineWidth = 2.5;
         ctx.stroke();
       }
 
-      // Draw Nodes
-      const nodes = Array.from(nodeMap.values());
-      for (const node of nodes) {
-        if (node.x === undefined || node.y === undefined) continue;
+      // Draw Nodes: grouped by color and batched, far cheaper than a fill per node
+      const isLargeGraph = nodeMap.size > LABEL_NODE_LIMIT;
+      const showAllLabels = isLargeGraph ? zoom >= 1.2 : zoom >= 0.5;
+      const nodeFill = (node: GraphNode) => {
+        if (node.type === 'missing') return '#f59e0b';
+        if (filterConfig.colorMode !== 'type' && node.color) return node.color;
+        if (node.isOrphan) return isDarkMode ? '#64748b' : '#94a3b8';
+        return isDarkMode ? '#38bdf8' : '#4f46e5';
+      };
 
-        const isHovered = hoveredNode?.id === node.id;
-        const radius = (node.radius || 9) * (isHovered ? 1.35 : 1);
+      const nodesByFill = new Map<string, GraphNode[]>();
+      const labeled: GraphNode[] = [];
+      nodeMap.forEach(node => {
+        if (node.x === undefined || node.y === undefined || !isVisible(node.x, node.y)) return;
+        const fill = nodeFill(node);
+        const group = nodesByFill.get(fill);
+        if (group) group.push(node);
+        else nodesByFill.set(fill, [node]);
+        if (showAllLabels || emphasizedId === node.id || neighbors.has(node.id)) labeled.push(node);
+      });
 
-        // Node Glow
-        if (isHovered) {
-          ctx.beginPath();
-          ctx.arc(node.x, node.y, radius + 8, 0, Math.PI * 2);
-          ctx.fillStyle = isDarkMode ? 'rgba(56, 189, 248, 0.35)' : 'rgba(79, 70, 229, 0.25)';
-          ctx.fill();
-        }
+      const emphasizedNode = emphasizedId ? nodeMap.get(emphasizedId) : undefined;
+      const radiusOf = (node: GraphNode) =>
+        (node.radius || 9) * (node === emphasizedNode ? 1.35 : 1);
 
-        // Main Node Body
+      // Node Glow
+      if (emphasizedNode?.x !== undefined && emphasizedNode.y !== undefined) {
         ctx.beginPath();
-        ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
-
-        if (node.type === 'missing') {
-          ctx.fillStyle = '#f59e0b';
-        } else if (filterConfig.colorMode !== 'type' && node.color) {
-          ctx.fillStyle = node.color;
-        } else if (node.isOrphan) {
-          ctx.fillStyle = isDarkMode ? '#64748b' : '#94a3b8';
-        } else {
-          ctx.fillStyle = isDarkMode ? '#38bdf8' : '#4f46e5';
-        }
+        ctx.arc(emphasizedNode.x, emphasizedNode.y, radiusOf(emphasizedNode) + 8, 0, Math.PI * 2);
+        ctx.fillStyle = isDarkMode ? 'rgba(56, 189, 248, 0.35)' : 'rgba(79, 70, 229, 0.25)';
         ctx.fill();
+      }
 
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = isDarkMode ? '#0f172a' : '#ffffff';
-        ctx.stroke();
+      // Main Node Body
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = isDarkMode ? '#0f172a' : '#ffffff';
+      nodesByFill.forEach((group, fill) => {
+        ctx.fillStyle = fill;
+        for (let start = 0; start < group.length; start += PATH_BATCH_SIZE) {
+          ctx.beginPath();
+          for (const node of group.slice(start, start + PATH_BATCH_SIZE)) {
+            const radius = radiusOf(node);
+            ctx.moveTo((node.x as number) + radius, node.y as number);
+            ctx.arc(node.x as number, node.y as number, radius, 0, Math.PI * 2);
+          }
+          ctx.fill();
+          // Outlines separate overlapping nodes, but cost more than the fills at this scale.
+          if (!isLargeGraph) ctx.stroke();
+        }
+      });
 
-        // Node Label - min 12px, font-weight 600
-        ctx.font = `600 ${isHovered ? 14 : 12}px Inter, sans-serif`;
-        ctx.fillStyle = isDarkMode ? '#f8fafc' : '#0f172a';
-        ctx.textAlign = 'center';
-        ctx.fillText(node.label, node.x, node.y + radius + 15);
+      // Node Label - min 12px, font-weight 600
+      ctx.textAlign = 'center';
+      ctx.fillStyle = isDarkMode ? '#f8fafc' : '#0f172a';
+      for (const node of labeled) {
+        ctx.font = `600 ${node === emphasizedNode ? 14 : 12}px Inter, sans-serif`;
+        ctx.fillText(node.label, node.x as number, (node.y as number) + radiusOf(node) + 15);
       }
 
       ctx.restore();
-
-      simulateStep();
-      animId = requestAnimationFrame(render);
     };
 
-    animId = requestAnimationFrame(render);
-    return () => cancelAnimationFrame(animId);
-  }, [graphData, filterConfig, viewport, hoveredNode, isDarkMode]);
+    tickRef.current = time => {
+      render();
+      if (isSettledRef.current) {
+        lastTickRef.current = null;
+        return;
+      }
+
+      // Cool by elapsed time rather than frames, so slow devices settle just as soon.
+      const elapsed =
+        lastTickRef.current === null ? 16.7 : Math.min(250, time - lastTickRef.current);
+      lastTickRef.current = time;
+
+      const gesture = gestureRef.current;
+      const energy = stepSimulation(
+        Array.from(simNodesRef.current.values()),
+        graphData.edges,
+        simNodesRef.current,
+        {
+          repelForce,
+          linkDistance,
+          collisionRadius,
+          pinnedNodeId: gesture?.kind === 'node' ? gesture.nodeId : null,
+          alpha: alphaRef.current,
+        }
+      );
+      alphaRef.current *= Math.pow(ALPHA_DECAY, elapsed / 16.7);
+
+      // A settled layout stops using the CPU; per-node energy keeps this size-independent.
+      const isAtRest =
+        energy / Math.max(1, simNodesRef.current.size) < SETTLED_ENERGY ||
+        alphaRef.current < ALPHA_MIN;
+      if (isAtRest && gesture?.kind !== 'node') isSettledRef.current = true;
+      requestFrame(); // When settling, this is one last frame showing the final positions.
+    };
+
+    requestFrame();
+    return () => {
+      if (animationRef.current !== null) {
+        cancelAnimationFrame(animationRef.current);
+        animationRef.current = null;
+      }
+    };
+  }, [
+    graphData,
+    repelForce,
+    linkDistance,
+    collisionRadius,
+    isDarkMode,
+    filterConfig.colorMode,
+    requestFrame,
+  ]);
+
+  // Canvas size changes (window resize, panel layout) need a redraw even when settled
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => requestFrame());
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [requestFrame]);
 
   const screenToWorld = (screenX: number, screenY: number) => {
-    return {
-      x: (screenX - viewport.x) / viewport.zoom,
-      y: (screenY - viewport.y) / viewport.zoom,
-    };
+    const { x, y, zoom } = viewportRef.current;
+    return { x: (screenX - x) / zoom, y: (screenY - y) / zoom };
   };
 
-  const getNodeAtPoint = (worldX: number, worldY: number): GraphNode | null => {
-    const nodes = Array.from(simNodesRef.current.values());
-    for (const node of nodes) {
-      if (node.x === undefined || node.y === undefined) continue;
+  const getNodeAtPoint = (worldX: number, worldY: number, slop: number): GraphNode | null => {
+    let hit: GraphNode | null = null;
+    simNodesRef.current.forEach(node => {
+      if (node.x === undefined || node.y === undefined) return;
       const dx = worldX - node.x;
       const dy = worldY - node.y;
-      const r = (node.radius || 9) + 6;
-      if (dx * dx + dy * dy <= r * r) {
-        return node;
-      }
-    }
-    return null;
+      const r = (node.radius || 9) + slop;
+      if (dx * dx + dy * dy <= r * r) hit = node;
+    });
+    return hit;
   };
 
-  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
-    const world = screenToWorld(mouseX, mouseY);
+  const zoomAround = useCallback(
+    (screenX: number, screenY: number, nextZoom: number) => {
+      setViewport(prev => {
+        const zoom = clampZoom(nextZoom);
+        const worldX = (screenX - prev.x) / prev.zoom;
+        const worldY = (screenY - prev.y) / prev.zoom;
+        return { x: screenX - worldX * zoom, y: screenY - worldY * zoom, zoom };
+      });
+    },
+    [setViewport]
+  );
 
-    const hit = getNodeAtPoint(world.x, world.y);
-    if (hit) {
-      dragRef.current = {
-        isDraggingCanvas: false,
-        draggedNodeId: hit.id,
-        startX: mouseX,
-        startY: mouseY,
-      };
-    } else {
-      dragRef.current = {
-        isDraggingCanvas: true,
-        draggedNodeId: null,
-        startX: mouseX - viewport.x,
-        startY: mouseY - viewport.y,
-      };
-    }
+  const pointerPosition = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   };
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
+  const pinchDistance = () => {
+    const [a, b] = Array.from(pointersRef.current.values());
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
 
-    if (dragRef.current.isDraggingCanvas) {
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    // Capturing keeps a drag alive when the pointer leaves the canvas.
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    e.currentTarget.focus({ preventScroll: true });
+
+    const position = pointerPosition(e);
+    pointersRef.current.set(e.pointerId, position);
+
+    if (pointersRef.current.size === 2) {
+      gestureRef.current = {
+        kind: 'pinch',
+        distance: pinchDistance(),
+        zoom: viewportRef.current.zoom,
+      };
+      return;
+    }
+
+    const world = screenToWorld(position.x, position.y);
+    // Fingers are less precise than a cursor, so touch gets a larger hit area.
+    const hit = getNodeAtPoint(world.x, world.y, e.pointerType === 'touch' ? 16 : 6);
+    gestureRef.current = hit
+      ? { kind: 'node', nodeId: hit.id, startX: position.x, startY: position.y, moved: false }
+      : {
+          kind: 'pan',
+          startX: position.x,
+          startY: position.y,
+          originX: viewportRef.current.x,
+          originY: viewportRef.current.y,
+        };
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const position = pointerPosition(e);
+    const gesture = gestureRef.current;
+
+    if (pointersRef.current.has(e.pointerId)) {
+      pointersRef.current.set(e.pointerId, position);
+    }
+
+    if (gesture?.kind === 'pinch' && pointersRef.current.size === 2) {
+      const [a, b] = Array.from(pointersRef.current.values());
+      zoomAround(
+        (a.x + b.x) / 2,
+        (a.y + b.y) / 2,
+        gesture.zoom * (pinchDistance() / gesture.distance)
+      );
+    } else if (gesture?.kind === 'pan') {
       setViewport(prev => ({
         ...prev,
-        x: mouseX - dragRef.current.startX,
-        y: mouseY - dragRef.current.startY,
+        x: gesture.originX + position.x - gesture.startX,
+        y: gesture.originY + position.y - gesture.startY,
       }));
-    } else if (dragRef.current.draggedNodeId) {
-      const world = screenToWorld(mouseX, mouseY);
-      const node = simNodesRef.current.get(dragRef.current.draggedNodeId);
-      if (node) {
-        node.x = world.x;
-        node.y = world.y;
-        node.vx = 0;
-        node.vy = 0;
+    } else if (gesture?.kind === 'node') {
+      if (Math.hypot(position.x - gesture.startX, position.y - gesture.startY) >= TAP_SLOP_PX) {
+        gesture.moved = true;
       }
-    } else {
-      const world = screenToWorld(mouseX, mouseY);
-      const hit = getNodeAtPoint(world.x, world.y);
-      setHoveredNode(hit);
+      if (gesture.moved) {
+        const world = screenToWorld(position.x, position.y);
+        const node = simNodesRef.current.get(gesture.nodeId);
+        if (node) {
+          node.x = world.x;
+          node.y = world.y;
+          node.vx = 0;
+          node.vy = 0;
+          reheat(0.3);
+        }
+      }
+    } else if (!gesture && e.pointerType === 'mouse') {
+      const world = screenToWorld(position.x, position.y);
+      const hit = getNodeAtPoint(world.x, world.y, 6);
+      if (hit?.id !== hoveredNodeRef.current?.id) {
+        hoveredNodeRef.current = hit;
+        requestFrame();
+      }
     }
   };
 
-  const handleMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
+  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    pointersRef.current.delete(e.pointerId);
+    const gesture = gestureRef.current;
 
-    if (
-      dragRef.current.draggedNodeId &&
-      Math.abs(mouseX - dragRef.current.startX) < 5 &&
-      Math.abs(mouseY - dragRef.current.startY) < 5
-    ) {
-      const node = simNodesRef.current.get(dragRef.current.draggedNodeId);
-      if (node && node.type === 'note') {
-        onOpenNote(node.id);
-      }
+    if (gesture?.kind === 'node' && !gesture.moved && e.type === 'pointerup') {
+      const node = simNodesRef.current.get(gesture.nodeId);
+      if (node?.type === 'note') onOpenNote(node.id);
     }
 
-    dragRef.current.draggedNodeId = null;
-    dragRef.current.isDraggingCanvas = false;
+    const wasDragging = gesture?.kind === 'node' && gesture.moved;
+    gestureRef.current = null;
+    if (wasDragging) reheat(0.3);
   };
 
-  const handleWheel = (e: React.WheelEvent) => {
+  // Registered natively: React's wheel listener is passive, so it can't stop the page scrolling.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const factor = e.deltaY < 0 ? 1.08 : 0.92;
+      zoomAround(e.clientX - rect.left, e.clientY - rect.top, viewportRef.current.zoom * factor);
+    };
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', handleWheel);
+  }, [zoomAround]);
+
+  const cycleHighlight = (direction: 1 | -1) => {
+    const ids = Array.from(simNodesRef.current.keys());
+    if (ids.length === 0) return;
+    const current = highlightedIdRef.current ? ids.indexOf(highlightedIdRef.current) : -1;
+    const nextId = ids[(current + direction + ids.length) % ids.length];
+    highlightedIdRef.current = nextId;
+
+    // Bring the node into view so keyboard users can see where they are.
+    const node = simNodesRef.current.get(nextId);
+    const canvas = canvasRef.current;
+    if (node?.x !== undefined && node.y !== undefined && canvas) {
+      const { x: worldX, y: worldY } = node;
+      setViewport(prev => ({
+        ...prev,
+        x: canvas.clientWidth / 2 - worldX * prev.zoom,
+        y: canvas.clientHeight / 2 - worldY * prev.zoom,
+      }));
+    }
+    requestFrame();
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLCanvasElement>) => {
+    const canvas = e.currentTarget;
+    const centerX = canvas.clientWidth / 2;
+    const centerY = canvas.clientHeight / 2;
+    const zoom = viewportRef.current.zoom;
+
+    switch (e.key) {
+      case 'ArrowLeft':
+        setViewport(prev => ({ ...prev, x: prev.x + PAN_STEP_PX }));
+        break;
+      case 'ArrowRight':
+        setViewport(prev => ({ ...prev, x: prev.x - PAN_STEP_PX }));
+        break;
+      case 'ArrowUp':
+        setViewport(prev => ({ ...prev, y: prev.y + PAN_STEP_PX }));
+        break;
+      case 'ArrowDown':
+        setViewport(prev => ({ ...prev, y: prev.y - PAN_STEP_PX }));
+        break;
+      case '+':
+      case '=':
+        zoomAround(centerX, centerY, zoom * 1.2);
+        break;
+      case '-':
+        zoomAround(centerX, centerY, zoom / 1.2);
+        break;
+      case '0':
+        recenter();
+        break;
+      case ']':
+        cycleHighlight(1);
+        break;
+      case '[':
+        cycleHighlight(-1);
+        break;
+      case 'Enter': {
+        const node = highlightedIdRef.current
+          ? simNodesRef.current.get(highlightedIdRef.current)
+          : null;
+        if (node?.type === 'note') onOpenNote(node.id);
+        break;
+      }
+      default:
+        return;
+    }
     e.preventDefault();
-    const zoomFactor = e.deltaY < 0 ? 1.08 : 0.92;
-    setViewport(prev => ({
-      ...prev,
-      zoom: Math.min(2.5, Math.max(0.3, prev.zoom * zoomFactor)),
-    }));
   };
+
+  const zoomFromCenter = (factor: number) => {
+    const canvas = canvasRef.current;
+    if (canvas)
+      zoomAround(
+        canvas.clientWidth / 2,
+        canvas.clientHeight / 2,
+        viewportRef.current.zoom * factor
+      );
+  };
+
+  const activeNoteTitle = notes.find(note => note.id === activeNoteId)?.title ?? null;
 
   return (
-    <div className="relative w-full h-[calc(100vh-5.5rem)] bg-background overflow-hidden">
+    <div className="relative flex-1 min-w-0 h-full min-h-0 bg-background overflow-hidden">
       {/* Floating Controls Panel */}
       <GraphControls
         config={filterConfig}
         onChangeConfig={setFilterConfig}
         onResetSimulation={resetSimulation}
         availableTags={availableTags}
+        notes={notes}
+        activeNoteTitle={activeNoteTitle}
+        visibleCount={graphData.nodes.length}
+        totalCount={fullNodeCount}
       />
 
       {/* Floating Zoom & Center bar */}
       <div className="absolute bottom-6 left-6 z-10 flex items-center space-x-1.5 bg-surface/90 dark:bg-slate-900/90 backdrop-blur-md border border-border dark:border-slate-800 p-1.5 rounded-xl shadow-xl text-slate-400">
         <button
-          onClick={() => setViewport(v => ({ ...v, zoom: Math.min(2.5, v.zoom * 1.2) }))}
+          onClick={() => zoomFromCenter(1.2)}
           title="Zoom In"
           className="p-2 hover:bg-surface-hover dark:hover:bg-slate-800 rounded-lg hover:text-indigo-400 transition-colors"
         >
           <ZoomIn className="w-4 h-4" />
         </button>
         <button
-          onClick={() => setViewport(v => ({ ...v, zoom: Math.max(0.3, v.zoom / 1.2) }))}
+          onClick={() => zoomFromCenter(1 / 1.2)}
           title="Zoom Out"
           className="p-2 hover:bg-surface-hover dark:hover:bg-slate-800 rounded-lg hover:text-indigo-400 transition-colors"
         >
@@ -432,17 +693,32 @@ export const KnowledgeGraphView: React.FC<KnowledgeGraphViewProps> = ({
         >
           <Maximize2 className="w-4 h-4" />
         </button>
-        <span className="text-xs font-mono font-bold px-2 text-slate-300">{Math.round(viewport.zoom * 100)}%</span>
+        <span className="text-xs font-mono font-bold px-2 text-slate-300">
+          {Math.round(viewport.zoom * 100)}%
+        </span>
       </div>
 
       {/* Canvas */}
       <canvas
         ref={canvasRef}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onWheel={handleWheel}
-        className="w-full h-full cursor-grab active:cursor-grabbing select-none"
+        tabIndex={0}
+        role="application"
+        aria-label="Knowledge graph. Arrow keys pan, plus and minus zoom, square brackets move between nodes, Enter opens a note."
+        data-testid="graph-canvas"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onPointerLeave={() => {
+          if (hoveredNodeRef.current) {
+            hoveredNodeRef.current = null;
+            requestFrame();
+          }
+        }}
+        onKeyDown={handleKeyDown}
+        // touch-action: none stops the browser claiming the gesture for scrolling or page zoom.
+        style={{ touchAction: 'none' }}
+        className="w-full h-full cursor-grab active:cursor-grabbing select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500"
       />
     </div>
   );
