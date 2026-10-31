@@ -1,28 +1,27 @@
 import React, { useState } from 'react';
 import { BUILT_IN_TEMPLATES } from '../../core/templates/builtInTemplates';
 import { NoteTemplate } from '../../core/domain/template';
-import { 
-  FileSpreadsheet, 
-  Folder, 
-  Tag as TagIcon, 
-  Plus, 
-  Check, 
+import { localDateString } from '../../core/util/ids';
+import {
+  FileSpreadsheet,
+  Folder,
+  Tag as TagIcon,
+  Plus,
+  Check,
   Copy,
-  ArrowRight
+  ArrowRight,
 } from 'lucide-react';
 
 interface TemplatesViewProps {
   onCreateNoteFromTemplate: (template: NoteTemplate, customTitle?: string) => void;
 }
 
-export const TemplatesView: React.FC<TemplatesViewProps> = ({
-  onCreateNoteFromTemplate,
-}) => {
+export const TemplatesView: React.FC<TemplatesViewProps> = ({ onCreateNoteFromTemplate }) => {
   const [selectedTemplate, setSelectedTemplate] = useState<NoteTemplate>(BUILT_IN_TEMPLATES[0]);
   const [noteTitle, setNoteTitle] = useState('');
   const [copied, setCopied] = useState(false);
 
-  const dateStr = new Date().toISOString().slice(0, 10);
+  const dateStr = localDateString();
   const previewContent = selectedTemplate.templateContent({
     title: noteTitle || selectedTemplate.name,
     dateStr,
@@ -40,7 +39,7 @@ export const TemplatesView: React.FC<TemplatesViewProps> = ({
   };
 
   return (
-    <div className="flex-1 flex h-[calc(100vh-5.5rem)] bg-background overflow-hidden select-none">
+    <div className="flex-1 flex h-full min-h-0 bg-background overflow-hidden select-none">
       {/* Templates List Sidebar */}
       <div className="w-80 border-r border-border dark:border-slate-800 bg-surface dark:bg-[#111827]/70 flex flex-col h-full">
         <div className="p-4 border-b border-border dark:border-slate-800">
@@ -70,16 +69,16 @@ export const TemplatesView: React.FC<TemplatesViewProps> = ({
                 }`}
               >
                 <div className="flex items-center justify-between">
-                  <span className={`text-xs font-bold ${isSelected ? 'text-indigo-400' : 'text-slate-900 dark:text-slate-100'}`}>
+                  <span
+                    className={`text-xs font-bold ${isSelected ? 'text-indigo-400' : 'text-slate-900 dark:text-slate-100'}`}
+                  >
                     {tpl.name}
                   </span>
                   <span className="text-xs text-slate-400 font-mono font-semibold">
                     {tpl.folder}
                   </span>
                 </div>
-                <p className="text-xs text-slate-400 mt-1.5 line-clamp-2">
-                  {tpl.description}
-                </p>
+                <p className="text-xs text-slate-400 mt-1.5 line-clamp-2">{tpl.description}</p>
                 <div className="flex items-center flex-wrap gap-1 mt-2.5">
                   {tpl.tags.map(tag => (
                     <span
@@ -122,7 +121,11 @@ export const TemplatesView: React.FC<TemplatesViewProps> = ({
               onClick={handleCopyPreview}
               className="flex items-center space-x-1.5 px-3.5 py-2 rounded-xl border border-border dark:border-slate-800 bg-surface dark:bg-slate-800 hover:bg-surface-hover text-xs font-semibold text-slate-300 transition-colors"
             >
-              {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4 text-slate-400" />}
+              {copied ? (
+                <Check className="w-4 h-4 text-emerald-400" />
+              ) : (
+                <Copy className="w-4 h-4 text-slate-400" />
+              )}
               <span>{copied ? 'Copied' : 'Copy Template'}</span>
             </button>
             <button

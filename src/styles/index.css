@@ -150,6 +150,40 @@ body {
   color: inherit;
 }
 
+.markdown-body table {
+  border-collapse: collapse;
+  margin: 1rem 0;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--color-border);
+  padding: 0.35rem 0.65rem;
+}
+
+/* Math & Mermaid: source text shows until the lazily loaded renderers replace it */
+.markdown-body .math-block {
+  margin: 1rem 0;
+  overflow-x: auto;
+  text-align: center;
+}
+
+.markdown-body pre.mermaid-block {
+  overflow-x: auto;
+}
+
+.markdown-body pre.mermaid-rendered {
+  background: transparent;
+  text-align: center;
+}
+
+.markdown-body .render-error {
+  border-left: 3px solid #f43f5e;
+  padding-left: 0.5rem;
+  color: #f43f5e;
+  font-size: 0.8rem;
+}
+
 /* Interactive Wikilink pill */
 .wikilink-pill {
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
@@ -169,5 +203,82 @@ body {
 
 .tactile-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+  box-shadow:
+    0 10px 25px -5px rgba(0, 0, 0, 0.3),
+    0 8px 10px -6px rgba(0, 0, 0, 0.3);
+}
+
+/*
+ * Light theme: components hard-code slate text and surfaces designed for the
+ * dark theme, which left editor text nearly invisible on white. Remap them here.
+ */
+html:not(.dark) .text-slate-50,
+html:not(.dark) .text-slate-100,
+html:not(.dark) .text-slate-200 {
+  color: #0f172a;
+}
+
+html:not(.dark) .text-slate-300 {
+  color: #334155;
+}
+
+html:not(.dark) .text-slate-400 {
+  color: #475569;
+}
+
+html:not(.dark) .hover\:text-white:hover {
+  color: #0f172a;
+}
+
+/* Accents pale enough for a dark surface are too faint on white. */
+html:not(.dark) .text-indigo-300,
+html:not(.dark) .text-indigo-400 {
+  color: #4338ca;
+}
+
+html:not(.dark) .text-amber-400 {
+  color: #b45309;
+}
+
+html:not(.dark) .text-emerald-400 {
+  color: #047857;
+}
+
+html:not(.dark) .text-rose-300,
+html:not(.dark) .text-rose-400 {
+  color: #be123c;
+}
+
+html:not(.dark) .text-cyan-400 {
+  color: #0e7490;
+}
+
+html:not(.dark) .bg-slate-900\/10 {
+  background-color: transparent;
+}
+
+html:not(.dark) .bg-slate-900\/80,
+html:not(.dark) .bg-slate-800\/80,
+html:not(.dark) .bg-slate-800\/90,
+html:not(.dark) .bg-slate-800,
+html:not(.dark) .bg-slate-900\/60 {
+  background-color: #f1f5f9;
+}
+
+html:not(.dark) .hover\:bg-slate-800:hover,
+html:not(.dark) .hover\:bg-slate-700:hover {
+  background-color: #e2e8f0;
+}
+
+html:not(.dark) .border-slate-800,
+html:not(.dark) .border-slate-800\/80,
+html:not(.dark) .border-slate-700,
+html:not(.dark) .border-slate-700\/60 {
+  border-color: var(--color-border);
+}
+
+/* Text sitting on a saturated accent stays white in both themes. */
+html:not(.dark) .bg-indigo-600.text-white,
+html:not(.dark) .bg-indigo-600 .text-white {
+  color: #ffffff;
 }

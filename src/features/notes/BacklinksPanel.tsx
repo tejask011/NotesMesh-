@@ -7,11 +7,9 @@ interface BacklinksPanelProps {
   onOpenNote: (noteId: string) => void;
 }
 
-export const BacklinksPanel: React.FC<BacklinksPanelProps> = ({
-  backlinks,
-  onOpenNote,
-}) => {
-  const [isOpen, setIsOpen] = useState(true);
+export const BacklinksPanel: React.FC<BacklinksPanelProps> = ({ backlinks, onOpenNote }) => {
+  // It would take most of a phone screen, so there it starts collapsed.
+  const [isOpen, setIsOpen] = useState(() => window.innerWidth >= 768);
 
   if (backlinks.length === 0) {
     return null;
@@ -19,7 +17,7 @@ export const BacklinksPanel: React.FC<BacklinksPanelProps> = ({
 
   return (
     <div className="border-t border-border dark:border-slate-800/80 bg-surface dark:bg-[#090d18] px-6 py-3 shrink-0 select-none font-sans">
-      <div 
+      <div
         onClick={() => setIsOpen(!isOpen)}
         className="flex items-center justify-between cursor-pointer group py-1"
       >
@@ -37,7 +35,7 @@ export const BacklinksPanel: React.FC<BacklinksPanelProps> = ({
       </div>
 
       {isOpen && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 mt-2.5 pb-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 mt-2.5 pb-2 max-h-44 overflow-y-auto">
           {backlinks.map(item => (
             <div
               key={item.sourceNoteId}

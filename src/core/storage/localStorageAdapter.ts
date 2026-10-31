@@ -1,145 +1,124 @@
 import { Note } from '../domain/note';
 import { CanvasDocument } from '../domain/canvas';
-import { StorageAdapter } from './storageInterface';
-import { SAMPLE_NOTES, SAMPLE_CANVAS } from './sampleData';
+import { RawWorkspace } from './migrations';
+import { WorkspaceData } from './schema';
+import { Snapshot, StorageBackend, UnreadableStorageError } from './storageInterface';
 
-const NOTES_KEY = 'notemesh_notes_v4';
-const CANVASES_KEY = 'notemesh_canvases_v4';
+export const WORKSPACE_KEY = 'notemesh_workspace';
+const SNAPSHOT_PREFIX = 'notemesh_snapshot_';
 
-export function stripAllEmojis(text: string): string {
-  if (!text) return '';
-  return text
-    .replace(/\p{Extended_Pictographic}/gu, '')
-    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
-    .replace(/[\uFE00-\uFE0F\u200D]/g, '');
+/** Key pairs written by app versions before schema 5, newest first. */
+export const LEGACY_KEYS = [4, 3, 2, 1].map(version => ({
+  version,
+  notes: `notemesh_notes_v${version}`,
+  canvases: `notemesh_canvases_v${version}`,
+}));
+
+interface StoredWorkspace extends WorkspaceData {
+  schemaVersion: number;
 }
 
-function cleanNote(note: Note): Note {
-  return {
-    ...note,
-    title: stripAllEmojis(note.title) || 'Untitled Note',
-    content: note.content
-      ? note.content
-          .split('\n')
-          .map(line => stripAllEmojis(line))
-          .join('\n')
-      : '',
-  };
-}
+/**
+ * Fallback engine for browsers where IndexedDB is unavailable. The workspace is
+ * one JSON blob under one key, so every write is atomic (a failed setItem leaves
+ * the previous value intact).
+ */
+export class LocalStorageBackend implements StorageBackend {
+  readonly kind = 'localstorage' as const;
+  readonly maxWorkspaceSnapshots = 2;
 
-export class LocalStorageAdapter implements StorageAdapter {
-  async getNotes(): Promise<Note[]> {
+  constructor(private readonly store: Storage = localStorage) {}
+
+  async read(): Promise<RawWorkspace & { schemaVersion: number | null }> {
+    const raw = this.store.getItem(WORKSPACE_KEY);
+    if (raw === null) return { notes: [], canvases: [], schemaVersion: null };
+
+    let parsed: Partial<StoredWorkspace> | null;
     try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        localStorage.removeItem('notemesh_notes_v1');
-        localStorage.removeItem('notemesh_notes_v2');
-        localStorage.removeItem('notemesh_notes_v3');
-      }
-
-      const data = localStorage.getItem(NOTES_KEY);
-      if (!data) {
-        const cleaned = SAMPLE_NOTES.map(cleanNote);
-        await this.setNotes(cleaned);
-        return cleaned;
-      }
-      const parsed = JSON.parse(data) as Note[];
-      return parsed.map(cleanNote);
-    } catch (e) {
-      console.error('Failed to load notes from localStorage', e);
-      return SAMPLE_NOTES.map(cleanNote);
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new UnreadableStorageError(raw, 'The saved workspace is not valid JSON.');
     }
-  }
-
-  private async setNotes(notes: Note[]): Promise<void> {
-    const cleaned = notes.map(cleanNote);
-    localStorage.setItem(NOTES_KEY, JSON.stringify(cleaned));
-  }
-
-  async saveNote(note: Note): Promise<void> {
-    const notes = await this.getNotes();
-    const cleaned = cleanNote(note);
-    const index = notes.findIndex(n => n.id === cleaned.id);
-    if (index >= 0) {
-      notes[index] = { ...cleaned, updatedAt: Date.now() };
-    } else {
-      notes.unshift({ ...cleaned, createdAt: Date.now(), updatedAt: Date.now() });
+    if (
+      !parsed ||
+      !Array.isArray(parsed.notes) ||
+      !Array.isArray(parsed.canvases) ||
+      !Number.isInteger(parsed.schemaVersion)
+    ) {
+      throw new UnreadableStorageError(raw, 'The saved workspace has an unexpected structure.');
     }
-    await this.setNotes(notes);
+    return {
+      notes: parsed.notes,
+      canvases: parsed.canvases,
+      schemaVersion: parsed.schemaVersion as number,
+    };
   }
 
-  async deleteNote(id: string): Promise<void> {
-    const notes = await this.getNotes();
-    const filtered = notes.filter(n => n.id !== id);
-    await this.setNotes(filtered);
+  private async update(mutate: (workspace: StoredWorkspace) => void): Promise<void> {
+    const current = await this.read();
+    const workspace = current as unknown as StoredWorkspace;
+    mutate(workspace);
+    this.store.setItem(WORKSPACE_KEY, JSON.stringify(workspace));
   }
 
-  async getCanvases(): Promise<CanvasDocument[]> {
-    try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        localStorage.removeItem('notemesh_canvases_v1');
-        localStorage.removeItem('notemesh_canvases_v2');
-        localStorage.removeItem('notemesh_canvases_v3');
-      }
+  putNote(note: Note): Promise<void> {
+    return this.update(workspace => {
+      const index = workspace.notes.findIndex(n => n.id === note.id);
+      if (index >= 0) workspace.notes[index] = note;
+      else workspace.notes.unshift(note);
+    });
+  }
 
-      const data = localStorage.getItem(CANVASES_KEY);
-      if (!data) {
-        await this.setCanvases([SAMPLE_CANVAS]);
-        return [SAMPLE_CANVAS];
+  removeNote(id: string): Promise<void> {
+    return this.update(workspace => {
+      workspace.notes = workspace.notes.filter(n => n.id !== id);
+    });
+  }
+
+  putCanvas(canvas: CanvasDocument): Promise<void> {
+    return this.update(workspace => {
+      const index = workspace.canvases.findIndex(c => c.id === canvas.id);
+      if (index >= 0) workspace.canvases[index] = canvas;
+      else workspace.canvases.unshift(canvas);
+    });
+  }
+
+  removeCanvas(id: string): Promise<void> {
+    return this.update(workspace => {
+      workspace.canvases = workspace.canvases.filter(c => c.id !== id);
+    });
+  }
+
+  async replaceAll(data: WorkspaceData, schemaVersion: number): Promise<void> {
+    this.store.setItem(WORKSPACE_KEY, JSON.stringify({ schemaVersion, ...data }));
+  }
+
+  removeRaw(noteIds: string[], canvasIds: string[]): Promise<void> {
+    return this.update(workspace => {
+      workspace.notes = workspace.notes.filter(n => !noteIds.includes(n?.id));
+      workspace.canvases = workspace.canvases.filter(c => !canvasIds.includes(c?.id));
+    });
+  }
+
+  async putSnapshot(snapshot: Snapshot): Promise<void> {
+    this.store.setItem(`${SNAPSHOT_PREFIX}${snapshot.id}`, JSON.stringify(snapshot));
+  }
+
+  async listSnapshots(): Promise<Snapshot[]> {
+    const snapshots: Snapshot[] = [];
+    for (let i = 0; i < this.store.length; i++) {
+      const key = this.store.key(i);
+      if (!key?.startsWith(SNAPSHOT_PREFIX)) continue;
+      try {
+        snapshots.push(JSON.parse(this.store.getItem(key) as string));
+      } catch {
+        // A damaged snapshot cannot be offered for restore; leave it alone.
       }
-      return JSON.parse(data) as CanvasDocument[];
-    } catch (e) {
-      console.error('Failed to load canvases', e);
-      return [SAMPLE_CANVAS];
     }
+    return snapshots;
   }
 
-  private async setCanvases(canvases: CanvasDocument[]): Promise<void> {
-    localStorage.setItem(CANVASES_KEY, JSON.stringify(canvases));
-  }
-
-  async saveCanvas(canvas: CanvasDocument): Promise<void> {
-    const canvases = await this.getCanvases();
-    const index = canvases.findIndex(c => c.id === canvas.id);
-    if (index >= 0) {
-      canvases[index] = { ...canvas, updatedAt: Date.now() };
-    } else {
-      canvases.unshift({ ...canvas, createdAt: Date.now(), updatedAt: Date.now() });
-    }
-    await this.setCanvases(canvases);
-  }
-
-  async deleteCanvas(id: string): Promise<void> {
-    const canvases = await this.getCanvases();
-    const filtered = canvases.filter(c => c.id !== id);
-    await this.setCanvases(filtered);
-  }
-
-  async exportAll(): Promise<string> {
-    const notes = await this.getNotes();
-    const canvases = await this.getCanvases();
-    return JSON.stringify({
-      version: '4.0.0',
-      exportedAt: new Date().toISOString(),
-      notes,
-      canvases,
-    }, null, 2);
-  }
-
-  async importAll(jsonString: string): Promise<boolean> {
-    try {
-      const data = JSON.parse(jsonString);
-      if (Array.isArray(data.notes)) {
-        await this.setNotes(data.notes);
-      }
-      if (Array.isArray(data.canvases)) {
-        await this.setCanvases(data.canvases);
-      }
-      return true;
-    } catch (e) {
-      console.error('Import failed', e);
-      return false;
-    }
+  async removeSnapshot(id: string): Promise<void> {
+    this.store.removeItem(`${SNAPSHOT_PREFIX}${id}`);
   }
 }
-
-export const storage = new LocalStorageAdapter();
